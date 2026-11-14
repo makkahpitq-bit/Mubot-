@@ -1,0 +1,13 @@
+{
+  "name": "vk-game-bot",
+  "version": "1.0.0",
+  "description": "VK Bot Game Zone",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "sqlite3": "^5.1.6",
+    "vk-io": "^4.9.0"
+  }
+}
