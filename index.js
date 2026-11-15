@@ -448,7 +448,16 @@ vk.updates.on('message_new', async (message) => {
             const activeMute = await dbGet("SELECT mute_until FROM mutes WHERE user_id = ? AND peer_id = ?", [String(userId), String(peerId)]);
             if (activeMute) {
                 if (Date.now() < activeMute.mute_until) {
-                    try { await vk.api.messages.delete({ message_ids: [message.id], delete_for_all: 1 }); } catch(e){}
+                    try {
+                        await vk.api.messages.delete({ 
+                            peer_id: peerId, 
+                            cmids: [message.conversationMessageId], 
+                            delete_for_all: 1 
+                        });
+                    } catch (e) {
+                        console.error(`[MUTE] Не удалось удалить сообщение ${message.id}:`, e.message);
+                        try { await vk.api.messages.delete({ message_ids: [message.id], delete_for_all: 1 }); } catch(e2) {}
+                    }
                     return; // Удаляем сообщение и ничего не отвечаем
                 } else {
                     await dbRun("DELETE FROM mutes WHERE user_id = ? AND peer_id = ?", [String(userId), String(peerId)]);
@@ -559,7 +568,7 @@ vk.updates.on('message_new', async (message) => {
             }
         }
 
-        const validCmds = ['стакан', 'кубик', 'монетка', 'дрим', 'краш', 'рулетка', 'рул', 'автомат', 'блэкджек', 'мины', 'топ', 'профиль', 'баланс', 'бизнес', 'машины', 'работа', 'бонус', 'фортуна', 'казино', 'help', 'помощь', 'start', 'начать', 'transfer', 'перевод', 'duel', 'вывести', 'мойбизнес', 'закрыть', 'rep', 'реп', 'промолист', 'promo', 'купить', 'купитьбиз', 'чсб', 'разчсб', 'kick', 'выдать', 'обнулить', 'создать', 'cp', 'ping', 'пинг', 'убрать', 'настройки', 'дом', 'дома', 'гараж', 'гаражи', 'продать', 'бан', 'kl', 'mute'];
+        const validCmds = ['стакан', 'кубик', 'монетка', 'дрим', 'краш', 'рулетка', 'рул', 'автомат', 'блэкджек', 'мины', 'топ', 'профиль', 'баланс', 'бизнес', 'машины', 'работа', 'бонус', 'фортуна', 'казино', 'help', 'помощь', 'start', 'начать', 'transfer', 'перевод', 'duel', 'вывести', 'мойбизнес', 'закрыть', 'rep', 'реп', 'промолист', 'promo', 'купить', 'купитьбиз', 'чсб', 'разчсб', 'kick', 'выдать', 'обнулить', 'создать', 'cp', 'ping', 'пинг', 'убрать', 'настройки', 'дом', 'дома', 'гараж', 'гаражи', 'продать', 'бан', 'kl', 'mute', 'unmute', 'размут', 'unban', 'разбан'];
         const isMainButton = text.includes('работа') || text.includes('рулетка') || text.includes('профиль') || text.includes('топ');
 
         if (!text.startsWith('/') && !validCmds.includes(cmdWord) && !isMainButton) {
@@ -1355,6 +1364,62 @@ vk.updates.on('message_new', async (message) => {
 
         // ===== АДМИНСКИЕ КОМАНДЫ =====
         if (userId === ADMIN_ID) {
+            if (cleanText.startsWith('unmute') || cleanText.startsWith('размут')) {
+                if (parts.length === 1 && !message.hasReplyMessage) {
+                    return await message.reply("🔔 Чтобы снять мут, используйте /unmute @VK (или ответом на сообщение)", replyParams());
+                }
+
+                const { targetId } = await getTargetAndReason(message, cleanText.startsWith('unmute') ? 'unmute' : 'размут');
+
+                if (!targetId) return await message.reply("⚠️ Пользователь не найден. Проверьте ссылку или упоминание.", replyParams());
+
+                const activeMute = await dbGet("SELECT mute_until FROM mutes WHERE user_id = ? AND peer_id = ?", [String(targetId), String(peerId)]);
+                if (!activeMute || Date.now() >= activeMute.mute_until) {
+                    if (activeMute) {
+                        await dbRun("DELETE FROM mutes WHERE user_id = ? AND peer_id = ?", [String(targetId), String(peerId)]);
+                    }
+                    return await message.reply("❌ У этого игрока нет активного мута в данной беседе.", replyParams());
+                }
+
+                await dbRun("DELETE FROM mutes WHERE user_id = ? AND peer_id = ?", [String(targetId), String(peerId)]);
+
+                if (message.isChat) {
+                    try {
+                        await vk.api.messages.changeConversationMemberRestrictions({
+                            group_id: GROUP_ID,
+                            peer_id: peerId,
+                            member_id: targetId,
+                            action: 'none', 
+                            for: 0
+                        });
+                    } catch(e) {
+                        console.error("Ошибка при снятии мута ВК:", e.message);
+                    }
+                }
+
+                const targetName = await getFullName(targetId);
+                return await message.reply(`✅ С игрока ${targetName} успешно снят мут!`, replyParams());
+            }
+
+            if (cleanText.startsWith('unban') || cleanText.startsWith('разбан')) {
+                if (parts.length === 1 && !message.hasReplyMessage) {
+                    return await message.reply("🔔 Чтобы разбанить пользователя, используйте /unban @VK (или ответом на сообщение)", replyParams());
+                }
+
+                const { targetId } = await getTargetAndReason(message, cleanText.startsWith('unban') ? 'unban' : 'разбан');
+
+                if (!targetId) return await message.reply("⚠️ Пользователь не найден. Проверьте ссылку или упоминание.", replyParams());
+
+                const existingBan = await dbGet("SELECT reason FROM blacklist WHERE user_id = ?", [String(targetId)]);
+                if (!existingBan) return await message.reply("❌ Этот игрок не находится в черном списке бота.", replyParams());
+
+                await dbRun("DELETE FROM blacklist WHERE user_id = ?", [String(targetId)]);
+                const targetName = await getFullName(targetId);
+                const senderName = await getFullName(message.senderId);
+
+                return await message.reply(`✅ ${senderName} разбанил(-а) пользователя ${targetName}. Теперь он снова может пользоваться ботом и заходить в беседы.`, replyParams());
+            }
+
             if (cleanText.startsWith('kl')) {
                 if (parts.length === 1 && !message.hasReplyMessage) {
                     return await message.reply("🔔 Чтобы полностью сбросить игрока, используйте /kl @VK (или ответом на сообщение)", replyParams());
