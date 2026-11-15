@@ -34,6 +34,7 @@ const dbAll = (query, params = []) => new Promise((res, rej) => db.all(query, pa
 const gameCooldowns = new Map(); 
 const adminStates = new Map(); 
 const spamCache = new Map(); 
+const chsbNotifyCache = new Map(); // Чтобы не спамить сообщением о ЧС
 
 // Данные бизнесов
 const BIZ_DATA = {
@@ -71,6 +72,7 @@ async function initDB() {
     await dbRun("CREATE TABLE IF NOT EXISTS promos (code TEXT PRIMARY KEY, amount INTEGER, limit_count INTEGER, used_by TEXT DEFAULT '')");
     await dbRun("CREATE TABLE IF NOT EXISTS games (game_id TEXT PRIMARY KEY, user_id TEXT, bet INTEGER, mines TEXT, opened TEXT, multiplier REAL, msg_id TEXT, start_time INTEGER)");
     await dbRun("CREATE TABLE IF NOT EXISTS blacklist (user_id TEXT PRIMARY KEY, reason TEXT)");
+    await dbRun("CREATE TABLE IF NOT EXISTS chat_bans (user_id TEXT, peer_id TEXT, reason TEXT, PRIMARY KEY (user_id, peer_id))");
     await dbRun("CREATE TABLE IF NOT EXISTS mutes (user_id TEXT, peer_id TEXT, mute_until INTEGER, reason TEXT, PRIMARY KEY (user_id, peer_id))");
     await dbRun("CREATE TABLE IF NOT EXISTS chat_messages (peer_id TEXT, user_id TEXT, count INTEGER DEFAULT 0, PRIMARY KEY (peer_id, user_id))");
     await dbRun("CREATE TABLE IF NOT EXISTS businesses (user_id TEXT PRIMARY KEY, biz_name TEXT, level INTEGER DEFAULT 1, balance INTEGER DEFAULT 0, last_income INTEGER, last_withdraw INTEGER DEFAULT 0)");
@@ -389,8 +391,22 @@ const getBizKb = (authorId) => Keyboard.builder().inline()
 // ===== ПРИВЕТСТВИЕ И АВТО-КИК ЗАБАНЕННЫХ =====
 vk.updates.on('chat_invite_user', async (context) => {
     if (context.memberId > 0) {
-        const banned = await dbGet("SELECT reason FROM blacklist WHERE user_id = ?", [String(context.memberId)]);
-        if (banned) {
+        // Проверка на глобальный ЧС
+        const globalBan = await dbGet("SELECT reason FROM blacklist WHERE user_id = ?", [String(context.memberId)]);
+        if (globalBan) {
+            try {
+                await vk.api.messages.removeChatUser({
+                    chat_id: context.peerId - 2000000000,
+                    user_id: context.memberId,
+                    group_id: GROUP_ID
+                });
+            } catch(e) {}
+            return;
+        }
+
+        // Проверка на бан в конкретной беседе
+        const chatBan = await dbGet("SELECT reason FROM chat_bans WHERE user_id = ? AND peer_id = ?", [String(context.memberId), String(context.peerId)]);
+        if (chatBan) {
             try {
                 await vk.api.messages.removeChatUser({
                     chat_id: context.peerId - 2000000000,
@@ -399,7 +415,7 @@ vk.updates.on('chat_invite_user', async (context) => {
                 });
                 await vk.api.messages.send({
                     peer_id: context.peerId,
-                    message: `🚫 [id${context.memberId}|Игрок] был автоматически исключен из беседы, так как находится в черном списке бота.\n📌 Причина: ${banned.reason}`,
+                    message: `🚫 [id${context.memberId}|Игрок] был автоматически исключен из беседы, так как имеет бан в этой беседе.\n📌 Причина: ${chatBan.reason}`,
                     random_id: Math.floor(Math.random() * 1000000000),
                     disable_mentions: 1
                 });
@@ -443,6 +459,52 @@ vk.updates.on('message_new', async (message) => {
         const parts = cleanText.split(/\s+/);
         const cmdWord = parts[0];
 
+        // --- ГЛОБАЛЬНЫЙ ЧС (ЧСБ) КАК НА СКРИНШОТЕ ---
+        if (userId !== ADMIN_ID) {
+            const isBlacklisted = await dbGet("SELECT reason FROM blacklist WHERE user_id = ?", [String(userId)]);
+            if (isBlacklisted) {
+                const cacheKey = `chsb_${userId}`;
+                if (!chsbNotifyCache.has(cacheKey) || Date.now() - chsbNotifyCache.get(cacheKey) > 60000) { // Раз в минуту
+                    chsbNotifyCache.set(cacheKey, Date.now());
+                    
+                    const banText = `💀 Вы заморожены в боте. Ожидайте, когда вам выдадут наказание!\n\n` +
+                                    `😈 Вы заблокированы в боте до НАВСЕГДА по причине: ${isBlacklisted.reason}`;
+                    
+                    const banKb = Keyboard.builder().inline()
+                        .urlButton({ label: 'Подать апелляцию', url: `https://vk.com/write-${ADMIN_ID}` }) 
+                        .callbackButton({ label: 'Получить разбан', payload: { cmd: 'unban_request' }, color: Keyboard.POSITIVE_COLOR })
+                        .row()
+                        .urlButton({ label: 'Правила бота', url: `https://vk.com/public${GROUP_ID}` });
+                    
+                    try {
+                        await vk.api.messages.send({
+                            peer_id: peerId,
+                            message: banText,
+                            keyboard: banKb.toString(),
+                            random_id: Math.floor(Math.random() * 1000000000),
+                            disable_mentions: 1
+                        });
+                    } catch(e) {}
+                }
+                return; // Дальше не обрабатываем
+            }
+        }
+
+        // --- ПРОВЕРКА НА БАН В БЕСЕДЕ ---
+        if (message.isChat && userId !== ADMIN_ID) {
+            const chatBan = await dbGet("SELECT reason FROM chat_bans WHERE user_id = ? AND peer_id = ?", [String(userId), String(peerId)]);
+            if (chatBan) {
+                try {
+                    await vk.api.messages.removeChatUser({
+                        chat_id: peerId - 2000000000,
+                        user_id: userId,
+                        group_id: GROUP_ID
+                    });
+                } catch(e) {}
+                return;
+            }
+        }
+
         // --- ПРОВЕРКА НА РУЧНОЙ МУТ ---
         if (message.isChat && userId !== ADMIN_ID) {
             const activeMute = await dbGet("SELECT mute_until FROM mutes WHERE user_id = ? AND peer_id = ?", [String(userId), String(peerId)]);
@@ -455,28 +517,12 @@ vk.updates.on('message_new', async (message) => {
                             delete_for_all: 1 
                         });
                     } catch (e) {
-                        console.error(`[MUTE] Не удалось удалить сообщение ${message.id}:`, e.message);
                         try { await vk.api.messages.delete({ message_ids: [message.id], delete_for_all: 1 }); } catch(e2) {}
                     }
-                    return; // Удаляем сообщение и ничего не отвечаем
+                    return; 
                 } else {
                     await dbRun("DELETE FROM mutes WHERE user_id = ? AND peer_id = ?", [String(userId), String(peerId)]);
                 }
-            }
-        }
-
-        // --- АВТО-КИК ЗАБАНЕННЫХ В ЧАТЕ ---
-        if (message.isChat && userId !== ADMIN_ID) {
-            const isBlacklisted = await dbGet("SELECT reason FROM blacklist WHERE user_id = ?", [String(userId)]);
-            if (isBlacklisted) {
-                try {
-                    await vk.api.messages.removeChatUser({
-                        chat_id: peerId - 2000000000,
-                        user_id: userId,
-                        group_id: GROUP_ID
-                    });
-                } catch(e) {}
-                return; // Дальше не обрабатываем
             }
         }
 
@@ -600,13 +646,6 @@ vk.updates.on('message_new', async (message) => {
                 await dbRun("UPDATE chat_messages SET count = count + 1 WHERE peer_id = ? AND user_id = ?", [String(peerId), String(userId)]);
             } else {
                 await dbRun("INSERT INTO chat_messages (peer_id, user_id, count) VALUES (?, ?, 1)", [String(peerId), String(userId)]);
-            }
-        }
-
-        if (text.startsWith('/') && userId !== ADMIN_ID) {
-            const isBlacklisted = await dbGet("SELECT reason FROM blacklist WHERE user_id = ?", [String(userId)]);
-            if (isBlacklisted) {
-                return await message.reply(`🚫 Доступ запрещен!\n\n👤 Ваш ID: ${userId}\n📝 Вы в черном списке бота.\n📌 Причина: ${isBlacklisted.reason}`, { disable_mentions: 1 });
             }
         }
 
@@ -1410,14 +1449,30 @@ vk.updates.on('message_new', async (message) => {
 
                 if (!targetId) return await message.reply("⚠️ Пользователь не найден. Проверьте ссылку или упоминание.", replyParams());
 
-                const existingBan = await dbGet("SELECT reason FROM blacklist WHERE user_id = ?", [String(targetId)]);
-                if (!existingBan) return await message.reply("❌ Этот игрок не находится в черном списке бота.", replyParams());
+                let removed = false;
+                
+                // Удаляем из глобального ЧС
+                const existingGlobal = await dbGet("SELECT user_id FROM blacklist WHERE user_id = ?", [String(targetId)]);
+                if (existingGlobal) {
+                    await dbRun("DELETE FROM blacklist WHERE user_id = ?", [String(targetId)]);
+                    removed = true;
+                }
 
-                await dbRun("DELETE FROM blacklist WHERE user_id = ?", [String(targetId)]);
+                // Удаляем из бана беседы
+                if (message.isChat) {
+                    const existingChat = await dbGet("SELECT user_id FROM chat_bans WHERE user_id = ? AND peer_id = ?", [String(targetId), String(peerId)]);
+                    if (existingChat) {
+                        await dbRun("DELETE FROM chat_bans WHERE user_id = ? AND peer_id = ?", [String(targetId), String(peerId)]);
+                        removed = true;
+                    }
+                }
+
+                if (!removed) return await message.reply("❌ Этот игрок не находится в бан-листе (ни в ЧС, ни в бане беседы).", replyParams());
+
                 const targetName = await getFullName(targetId);
                 const senderName = await getFullName(message.senderId);
 
-                return await message.reply(`✅ ${senderName} разбанил(-а) пользователя ${targetName}. Теперь он снова может пользоваться ботом и заходить в беседы.`, replyParams());
+                return await message.reply(`✅ ${senderName} разбанил(-а) пользователя ${targetName}.`, replyParams());
             }
 
             if (cleanText.startsWith('kl')) {
@@ -1429,9 +1484,7 @@ vk.updates.on('message_new', async (message) => {
                 if (!targetId) return await message.reply("⚠️ Пользователь не найден.", replyParams());
                 if (targetId === ADMIN_ID) return await message.reply("❌ Вы не можете сбросить себя.", replyParams());
 
-                // Удаляем недвижимость (освобождаем дома и гаражи)
                 await dbRun("DELETE FROM properties WHERE owner_id = ?", [String(targetId)]);
-                // Полный сброс профиля
                 await dbRun("UPDATE users SET balance = 0, reputation = 0, xp = 0, level = 1, duel_wins = 0, bonus_count = 0, car = NULL, last_bonus_date = NULL, bonus_streak = 0 WHERE user_id = ?", [String(targetId)]);
                 
                 const targetName = await getFullName(targetId);
@@ -1451,7 +1504,7 @@ vk.updates.on('message_new', async (message) => {
                 } else {
                     const { targetId: tId } = await getTargetAndReason(message, 'mute');
                     targetId = tId;
-                    args.shift(); // Удаляем упоминание из аргументов
+                    args.shift(); 
                 }
 
                 if (!targetId) return await message.reply("⚠️ Пользователь не найден.", replyParams());
@@ -1496,33 +1549,32 @@ vk.updates.on('message_new', async (message) => {
 
             if (cleanText.startsWith('бан') || cleanText.startsWith('ban')) {
                 if (parts.length === 1 && !message.hasReplyMessage) {
-                    return await message.reply("🔔 Чтобы забанить пользователя, используйте /ban @VK Причина", replyParams());
+                    return await message.reply("🔔 Чтобы забанить пользователя в беседе, используйте /ban @VK Причина", replyParams());
                 }
+                if (!message.isChat) return await message.reply("❌ Эту команду можно использовать только в беседе для её блокировки.", replyParams());
 
                 const { targetId, reason } = await getTargetAndReason(message, cleanText.startsWith('бан') ? 'бан' : 'ban');
 
                 if (!targetId) return await message.reply("⚠️ Пользователь не найден. Проверьте ссылку или упоминание.", replyParams());
                 if (targetId === ADMIN_ID) return await message.reply("❌ Вы не можете забанить себя.", replyParams());
                 
-                const existingBan = await dbGet("SELECT reason FROM blacklist WHERE user_id = ?", [String(targetId)]);
-                if (existingBan) return await message.reply("❌ Этот игрок уже находится в черном списке бота (забанен)!", replyParams());
+                const existingBan = await dbGet("SELECT reason FROM chat_bans WHERE user_id = ? AND peer_id = ?", [String(targetId), String(peerId)]);
+                if (existingBan) return await message.reply("❌ Этот игрок уже забанен в данной беседе!", replyParams());
 
-                await dbRun("REPLACE INTO blacklist (user_id, reason) VALUES (?, ?)", [String(targetId), reason]);
+                await dbRun("REPLACE INTO chat_bans (user_id, peer_id, reason) VALUES (?, ?, ?)", [String(targetId), String(peerId), reason]);
                 
-                if (message.isChat) {
-                    try {
-                        await vk.api.messages.removeChatUser({
-                            chat_id: peerId - 2000000000,
-                            user_id: targetId,
-                            group_id: GROUP_ID
-                        });
-                    } catch(e) {}
-                }
+                try {
+                    await vk.api.messages.removeChatUser({
+                        chat_id: peerId - 2000000000,
+                        user_id: targetId,
+                        group_id: GROUP_ID
+                    });
+                } catch(e) {}
 
                 const targetName = await getFullName(targetId);
                 const senderName = await getFullName(message.senderId);
                 
-                return await message.reply(`${senderName} забанил(-а) пользователя ${targetName} по причине: "${reason}"`, replyParams());
+                return await message.reply(`${senderName} забанил(-а) в этой беседе пользователя ${targetName} по причине: "${reason}"`, replyParams());
             }
 
             if (cleanText === 'настройки') {
@@ -1566,8 +1618,8 @@ vk.updates.on('message_new', async (message) => {
                 if (targetId === ADMIN_ID) return await message.reply("❌ Вы не можете исключить самого себя.", replyParams());
                 if (!message.isChat) return await message.reply("❌ Эту команду можно использовать только в беседе.", replyParams());
                 
-                const existingBan = await dbGet("SELECT reason FROM blacklist WHERE user_id = ?", [String(targetId)]);
-                if (existingBan) return await message.reply("❌ Этот игрок уже забанен в боте.", replyParams());
+                const existingBan = await dbGet("SELECT reason FROM chat_bans WHERE user_id = ? AND peer_id = ?", [String(targetId), String(peerId)]);
+                if (existingBan) return await message.reply("❌ Этот игрок уже забанен в данной беседе.", replyParams());
 
                 const chatId = message.peerId - 2000000000;
                 const targetName = await getFullName(targetId);
@@ -1583,7 +1635,7 @@ vk.updates.on('message_new', async (message) => {
 
             if (cleanText.startsWith('чсб')) {
                 if (parts.length === 1 && !message.hasReplyMessage) {
-                    return await message.reply("🔔 Чтобы занести в ЧС, используйте /чсб @VK Причина (Пример: /чсб @andrey_mala Спам)", replyParams());
+                    return await message.reply("🔔 Чтобы занести в глобальный ЧС, используйте /чсб @VK Причина (Пример: /чсб @andrey_mala Спам)", replyParams());
                 }
 
                 const { targetId, reason } = await getTargetAndReason(message, 'чсб');
@@ -1592,13 +1644,13 @@ vk.updates.on('message_new', async (message) => {
                 if (targetId === ADMIN_ID) return await message.reply("❌ Вы не можете занести себя в ЧС.", replyParams());
 
                 const existingBan = await dbGet("SELECT reason FROM blacklist WHERE user_id = ?", [String(targetId)]);
-                if (existingBan) return await message.reply("❌ Этот игрок уже находится в ЧС (забанен)!", replyParams());
+                if (existingBan) return await message.reply("❌ Этот игрок уже находится в глобальном ЧС!", replyParams());
                 
                 await dbRun("REPLACE INTO blacklist (user_id, reason) VALUES (?, ?)", [String(targetId), reason]);
                 const targetName = await getFullName(targetId);
                 const senderName = await getFullName(message.senderId);
                 
-                return await message.reply(`${senderName} занес(-ла) в ЧС бота пользователя ${targetName} по причине: "${reason}"`, replyParams());
+                return await message.reply(`${senderName} занес(-ла) в глобальный ЧС бота пользователя ${targetName} по причине: "${reason}"`, replyParams());
             }
 
             if (cleanText.startsWith('разчсб')) {
@@ -1609,7 +1661,7 @@ vk.updates.on('message_new', async (message) => {
                 const targetName = await getFullName(targetId);
                 const senderName = await getFullName(message.senderId);
                 
-                return await message.reply(`${senderName} разбанил(-а) пользователя ${targetName} в ЧС бота.`, replyParams());
+                return await message.reply(`${senderName} разбанил(-а) пользователя ${targetName} в глобальном ЧС бота.`, replyParams());
             }
 
             if (cleanText.startsWith('выдать')) {
@@ -1777,6 +1829,14 @@ vk.updates.on('message_event', async (context) => {
     try {
         const payload = context.eventPayload;
         const userId = context.userId;
+
+        // Обработка кнопки "Получить разбан" из ЧС
+        if (payload.cmd === 'unban_request') {
+            return await safeAnswer({
+                type: 'show_snackbar',
+                text: '❌ Заявка на разбан отправлена! Ожидайте связи с администратором.'
+            });
+        }
 
         if ((payload.cmd === 'top_menu' || payload.cmd === 'top_back' || payload.cmd === 'biz_upgrade') && payload.author) {
             if (String(userId) !== String(payload.author)) {
