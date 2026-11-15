@@ -45,7 +45,7 @@ const BIZ_DATA = {
     'пятерочка': { name: '🏪 24/7 Пятёрочка', price: 50000000, baseIncome: 15000 }
 };
 
-// ===== АВТОСАЛОН (Добавлена цена выкупа sellPrice) =====
+// ===== АВТОСАЛОН =====
 const CARS_DATA = {
     'м5 ф90': { name: 'BMW M5 F90', price: 15000000, sellPrice: 10000000 },
     'м5 ф10': { name: 'BMW M5 F10', price: 8000000, sellPrice: 5000000 },
@@ -113,7 +113,8 @@ function parseAmount(str) {
     if (str.endsWith('всё') || str.endsWith('все') || str.endsWith('вб')) return 'ALL'; 
     
     let mult = 1;
-    if (str.endsWith('ккк') || str.endsWith('kkk')) { mult = 1000000000; str = str.slice(0, -3); }
+    if (str.endsWith('кккк') || str.endsWith('kkkk')) { mult = 1000000000000; str = str.slice(0, -4); }
+    else if (str.endsWith('ккк') || str.endsWith('kkk')) { mult = 1000000000; str = str.slice(0, -3); }
     else if (str.endsWith('кк') || str.endsWith('kk')) { mult = 1000000; str = str.slice(0, -2); }
     else if (str.endsWith('к') || str.endsWith('k')) { mult = 1000; str = str.slice(0, -1); }
     else if (str.endsWith('м') || str.endsWith('m')) { mult = 1000000; str = str.slice(0, -1); }
@@ -124,6 +125,7 @@ function parseAmount(str) {
 }
 
 function formatShortMoney(num) {
+    if (num >= 1000000000000) return (num / 1000000000000).toFixed(2).replace(/\.00$/, '') + 'кккк';
     if (num >= 1000000000) return (num / 1000000000).toFixed(2).replace(/\.00$/, '') + 'ккк';
     if (num >= 1000000) return (num / 1000000).toFixed(2).replace(/\.00$/, '') + 'кк';
     if (num >= 1000) return (num / 1000).toFixed(2).replace(/\.00$/, '') + 'к';
@@ -614,7 +616,7 @@ vk.updates.on('message_new', async (message) => {
             }
         }
 
-        const validCmds = ['стакан', 'кубик', 'монетка', 'дрим', 'краш', 'рулетка', 'рул', 'автомат', 'блэкджек', 'мины', 'топ', 'профиль', 'баланс', 'бизнес', 'машины', 'работа', 'бонус', 'фортуна', 'казино', 'help', 'помощь', 'start', 'начать', 'transfer', 'перевод', 'duel', 'вывести', 'мойбизнес', 'закрыть', 'rep', 'реп', 'промолист', 'promo', 'купить', 'купитьбиз', 'чсб', 'разчсб', 'kick', 'выдать', 'обнулить', 'создать', 'cp', 'ping', 'пинг', 'убрать', 'настройки', 'дом', 'дома', 'гараж', 'гаражи', 'продать', 'бан', 'kl', 'mute', 'unmute', 'размут', 'unban', 'разбан', 'заморозить', 'разморозить', 'pr', 'sellcar', 'слить'];
+        const validCmds = ['стакан', 'кубик', 'монетка', 'дрим', 'краш', 'рулетка', 'рул', 'автомат', 'блэкджек', 'мины', 'топ', 'профиль', 'баланс', 'бизнес', 'машины', 'работа', 'бонус', 'фортуна', 'казино', 'help', 'помощь', 'start', 'начать', 'transfer', 'перевод', 'duel', 'вывести', 'мойбизнес', 'закрыть', 'rep', 'реп', 'промолист', 'promo', 'купить', 'купитьбиз', 'чсб', 'разчсб', 'kick', 'выдать', 'обнулить', 'создать', 'cp', 'ping', 'пинг', 'убрать', 'настройки', 'дом', 'дома', 'гараж', 'гаражи', 'продать', 'бан', 'kl', 'mute', 'unmute', 'размут', 'unban', 'разбан', 'заморозить', 'разморозить', 'снять заморозку', 'снять заморозка', 'unfreeze', 'pr', 'sellcar', 'слить'];
         const isMainButton = text.includes('работа') || text.includes('рулетка') || text.includes('профиль') || text.includes('топ');
 
         if (!text.startsWith('/') && !validCmds.includes(cmdWord) && !isMainButton) {
@@ -1361,7 +1363,7 @@ vk.updates.on('message_new', async (message) => {
                 if (!amount || amount === 'ALL') return await message.reply("❌ Укажите корректную сумму.", replyParams());
                 if (targetId === userId) return await message.reply("❌ Нельзя перевести деньги самому себе.", replyParams());
                 if (targetId < 0) return await message.reply("❌ Нельзя переводить сообществам.", replyParams());
-                if (amount < 50 || amount > 5000000000) return await message.reply("❌ Сумма перевода должна быть от 50 до 5ккк (5,000,000,000)$", replyParams());
+                if (amount < 50 || amount > 5000000000000) return await message.reply("❌ Сумма перевода должна быть от 50 до 5кккк (5,000,000,000,000)$", replyParams());
                 if (balance < amount) return await message.reply("❌ У тебя недостаточно средств.", replyParams());
 
                 await updateBalance(userId, -amount);
@@ -1450,8 +1452,13 @@ vk.updates.on('message_new', async (message) => {
                 return await message.reply(`✅ Игрок ${await getFullName(targetId)} заморожен.`, replyParams());
             }
 
-            if (cleanText.startsWith('разморозить')) {
-                const { targetId } = await getTargetAndReason(message, 'разморозить');
+            if (cleanText.startsWith('разморозить') || cleanText.startsWith('снять заморозку') || cleanText.startsWith('снять заморозка') || cleanText.startsWith('unfreeze')) {
+                let cmdName = 'разморозить';
+                if (cleanText.startsWith('снять заморозку')) cmdName = 'снять заморозку';
+                if (cleanText.startsWith('снять заморозка')) cmdName = 'снять заморозка';
+                if (cleanText.startsWith('unfreeze')) cmdName = 'unfreeze';
+
+                const { targetId } = await getTargetAndReason(message, cmdName);
                 if (!targetId) return await message.reply("⚠️ Укажите пользователя.", replyParams());
                 await dbRun("DELETE FROM frozen WHERE user_id = ?", [String(targetId)]);
                 return await message.reply(`✅ Игрок ${await getFullName(targetId)} разморожен.`, replyParams());
