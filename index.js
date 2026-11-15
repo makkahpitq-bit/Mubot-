@@ -71,6 +71,7 @@ async function initDB() {
     await dbRun("CREATE TABLE IF NOT EXISTS promos (code TEXT PRIMARY KEY, amount INTEGER, limit_count INTEGER, used_by TEXT DEFAULT '')");
     await dbRun("CREATE TABLE IF NOT EXISTS games (game_id TEXT PRIMARY KEY, user_id TEXT, bet INTEGER, mines TEXT, opened TEXT, multiplier REAL, msg_id TEXT, start_time INTEGER)");
     await dbRun("CREATE TABLE IF NOT EXISTS blacklist (user_id TEXT PRIMARY KEY, reason TEXT)");
+    await dbRun("CREATE TABLE IF NOT EXISTS mutes (user_id TEXT, peer_id TEXT, mute_until INTEGER, reason TEXT, PRIMARY KEY (user_id, peer_id))");
     await dbRun("CREATE TABLE IF NOT EXISTS chat_messages (peer_id TEXT, user_id TEXT, count INTEGER DEFAULT 0, PRIMARY KEY (peer_id, user_id))");
     await dbRun("CREATE TABLE IF NOT EXISTS businesses (user_id TEXT PRIMARY KEY, biz_name TEXT, level INTEGER DEFAULT 1, balance INTEGER DEFAULT 0, last_income INTEGER, last_withdraw INTEGER DEFAULT 0)");
     await dbRun("CREATE TABLE IF NOT EXISTS rep_limits (user_id TEXT PRIMARY KEY, count INTEGER DEFAULT 0, last_reset INTEGER)");
@@ -442,6 +443,19 @@ vk.updates.on('message_new', async (message) => {
         const parts = cleanText.split(/\s+/);
         const cmdWord = parts[0];
 
+        // --- ПРОВЕРКА НА РУЧНОЙ МУТ ---
+        if (message.isChat && userId !== ADMIN_ID) {
+            const activeMute = await dbGet("SELECT mute_until FROM mutes WHERE user_id = ? AND peer_id = ?", [String(userId), String(peerId)]);
+            if (activeMute) {
+                if (Date.now() < activeMute.mute_until) {
+                    try { await vk.api.messages.delete({ message_ids: [message.id], delete_for_all: 1 }); } catch(e){}
+                    return; // Удаляем сообщение и ничего не отвечаем
+                } else {
+                    await dbRun("DELETE FROM mutes WHERE user_id = ? AND peer_id = ?", [String(userId), String(peerId)]);
+                }
+            }
+        }
+
         // --- АВТО-КИК ЗАБАНЕННЫХ В ЧАТЕ ---
         if (message.isChat && userId !== ADMIN_ID) {
             const isBlacklisted = await dbGet("SELECT reason FROM blacklist WHERE user_id = ?", [String(userId)]);
@@ -545,7 +559,7 @@ vk.updates.on('message_new', async (message) => {
             }
         }
 
-        const validCmds = ['стакан', 'кубик', 'монетка', 'дрим', 'краш', 'рулетка', 'рул', 'автомат', 'блэкджек', 'мины', 'топ', 'профиль', 'баланс', 'бизнес', 'машины', 'работа', 'бонус', 'фортуна', 'казино', 'help', 'помощь', 'start', 'начать', 'transfer', 'перевод', 'duel', 'вывести', 'мойбизнес', 'закрыть', 'rep', 'реп', 'промолист', 'promo', 'купить', 'купитьбиз', 'чсб', 'разчсб', 'kick', 'выдать', 'обнулить', 'создать', 'cp', 'ping', 'пинг', 'убрать', 'настройки', 'дом', 'дома', 'гараж', 'гаражи', 'продать', 'бан'];
+        const validCmds = ['стакан', 'кубик', 'монетка', 'дрим', 'краш', 'рулетка', 'рул', 'автомат', 'блэкджек', 'мины', 'топ', 'профиль', 'баланс', 'бизнес', 'машины', 'работа', 'бонус', 'фортуна', 'казино', 'help', 'помощь', 'start', 'начать', 'transfer', 'перевод', 'duel', 'вывести', 'мойбизнес', 'закрыть', 'rep', 'реп', 'промолист', 'promo', 'купить', 'купитьбиз', 'чсб', 'разчсб', 'kick', 'выдать', 'обнулить', 'создать', 'cp', 'ping', 'пинг', 'убрать', 'настройки', 'дом', 'дома', 'гараж', 'гаражи', 'продать', 'бан', 'kl', 'mute'];
         const isMainButton = text.includes('работа') || text.includes('рулетка') || text.includes('профиль') || text.includes('топ');
 
         if (!text.startsWith('/') && !validCmds.includes(cmdWord) && !isMainButton) {
@@ -1252,6 +1266,7 @@ vk.updates.on('message_new', async (message) => {
             }
 
             if (isNaN(bet) || bet < 100) return await message.reply("❌ Минимальная ставка 100$.", replyParams());
+            if (bet > 5000000000) return await message.reply("❌ Максимальная ставка в минах — 5ккк (5,000,000,000)$", replyParams());
             if (bet > balance) return await message.reply(`❌ Недостаточно средств! Ваш баланс: ${formatMoney(balance)}$.`, replyParams());
 
             const gameId = String(Math.floor(Math.random() * 90000) + 10000);
@@ -1268,7 +1283,7 @@ vk.updates.on('message_new', async (message) => {
                 if (!amount || amount === 'ALL') return await message.reply("❌ Укажите корректную сумму.", replyParams());
                 if (targetId === userId) return await message.reply("❌ Нельзя перевести деньги самому себе.", replyParams());
                 if (targetId < 0) return await message.reply("❌ Нельзя переводить сообществам.", replyParams());
-                if (amount < 50 || amount > 5000000000) return await message.reply("❌ Сумма перевода должна быть от 50 до 5 000 000 000$", replyParams());
+                if (amount < 50 || amount > 5000000000) return await message.reply("❌ Сумма перевода должна быть от 50 до 5ккк (5,000,000,000)$", replyParams());
                 if (balance < amount) return await message.reply("❌ У тебя недостаточно средств.", replyParams());
 
                 await updateBalance(userId, -amount);
@@ -1340,6 +1355,80 @@ vk.updates.on('message_new', async (message) => {
 
         // ===== АДМИНСКИЕ КОМАНДЫ =====
         if (userId === ADMIN_ID) {
+            if (cleanText.startsWith('kl')) {
+                if (parts.length === 1 && !message.hasReplyMessage) {
+                    return await message.reply("🔔 Чтобы полностью сбросить игрока, используйте /kl @VK (или ответом на сообщение)", replyParams());
+                }
+
+                const { targetId } = await getTargetAndReason(message, 'kl');
+                if (!targetId) return await message.reply("⚠️ Пользователь не найден.", replyParams());
+                if (targetId === ADMIN_ID) return await message.reply("❌ Вы не можете сбросить себя.", replyParams());
+
+                // Удаляем недвижимость (освобождаем дома и гаражи)
+                await dbRun("DELETE FROM properties WHERE owner_id = ?", [String(targetId)]);
+                // Полный сброс профиля
+                await dbRun("UPDATE users SET balance = 0, reputation = 0, xp = 0, level = 1, duel_wins = 0, bonus_count = 0, car = NULL, last_bonus_date = NULL, bonus_streak = 0 WHERE user_id = ?", [String(targetId)]);
+                
+                const targetName = await getFullName(targetId);
+                return await message.reply(`💥 Игрок ${targetName} был полностью сброшен! Дома, гаражи, машины, бонусы и уровни обнулены. Недвижимость освобождена для других.`, replyParams());
+            }
+
+            if (cleanText.startsWith('mute')) {
+                if (parts.length === 1 && !message.hasReplyMessage) {
+                    return await message.reply("🔔 Формат: /mute @VK [время в мин] [причина]", replyParams());
+                }
+
+                let targetId = null;
+                let args = message.text.split(' ').slice(1); 
+                
+                if (message.hasReplyMessage) {
+                    targetId = message.replyMessage.senderId;
+                } else {
+                    const { targetId: tId } = await getTargetAndReason(message, 'mute');
+                    targetId = tId;
+                    args.shift(); // Удаляем упоминание из аргументов
+                }
+
+                if (!targetId) return await message.reply("⚠️ Пользователь не найден.", replyParams());
+                if (targetId === ADMIN_ID) return await message.reply("❌ Вы не можете замутить себя.", replyParams());
+
+                let muteMinutes = 10;
+                let reason = "Причина не указана";
+
+                if (args.length > 0) {
+                    const parsedTime = parseInt(args[0]);
+                    if (!isNaN(parsedTime) && parsedTime > 0) {
+                        muteMinutes = parsedTime;
+                        if (args.length > 1) reason = args.slice(1).join(' ');
+                    } else {
+                        reason = args.join(' ');
+                    }
+                }
+
+                const existingMute = await dbGet("SELECT mute_until FROM mutes WHERE user_id = ? AND peer_id = ?", [String(targetId), String(peerId)]);
+                if (existingMute && Date.now() < existingMute.mute_until) {
+                    return await message.reply("❌ У этого игрока уже имеется активная блокировка в данной беседе!", replyParams());
+                }
+
+                const muteUntil = Date.now() + (muteMinutes * 60 * 1000);
+                await dbRun("REPLACE INTO mutes (user_id, peer_id, mute_until, reason) VALUES (?, ?, ?, ?)", [String(targetId), String(peerId), muteUntil, reason]);
+
+                if (message.isChat) {
+                    try {
+                        await vk.api.messages.changeConversationMemberRestrictions({
+                            group_id: GROUP_ID,
+                            peer_id: peerId,
+                            member_id: targetId,
+                            action: 'ro',
+                            for: muteMinutes * 60
+                        });
+                    } catch(e) {}
+                }
+
+                const targetName = await getFullName(targetId);
+                return await message.reply(`🚫 ${targetName} получил мут на ${muteMinutes} минут.\n📌 Причина: ${reason}`, replyParams());
+            }
+
             if (cleanText.startsWith('бан') || cleanText.startsWith('ban')) {
                 if (parts.length === 1 && !message.hasReplyMessage) {
                     return await message.reply("🔔 Чтобы забанить пользователя, используйте /ban @VK Причина", replyParams());
@@ -1350,6 +1439,9 @@ vk.updates.on('message_new', async (message) => {
                 if (!targetId) return await message.reply("⚠️ Пользователь не найден. Проверьте ссылку или упоминание.", replyParams());
                 if (targetId === ADMIN_ID) return await message.reply("❌ Вы не можете забанить себя.", replyParams());
                 
+                const existingBan = await dbGet("SELECT reason FROM blacklist WHERE user_id = ?", [String(targetId)]);
+                if (existingBan) return await message.reply("❌ Этот игрок уже находится в черном списке бота (забанен)!", replyParams());
+
                 await dbRun("REPLACE INTO blacklist (user_id, reason) VALUES (?, ?)", [String(targetId), reason]);
                 
                 if (message.isChat) {
@@ -1408,6 +1500,9 @@ vk.updates.on('message_new', async (message) => {
                 if (!targetId) return await message.reply("⚠️ Пользователь не найден. Проверьте ссылку или упоминание.", replyParams());
                 if (targetId === ADMIN_ID) return await message.reply("❌ Вы не можете исключить самого себя.", replyParams());
                 if (!message.isChat) return await message.reply("❌ Эту команду можно использовать только в беседе.", replyParams());
+                
+                const existingBan = await dbGet("SELECT reason FROM blacklist WHERE user_id = ?", [String(targetId)]);
+                if (existingBan) return await message.reply("❌ Этот игрок уже забанен в боте.", replyParams());
 
                 const chatId = message.peerId - 2000000000;
                 const targetName = await getFullName(targetId);
@@ -1430,6 +1525,9 @@ vk.updates.on('message_new', async (message) => {
 
                 if (!targetId) return await message.reply("⚠️ Пользователь не найден. Проверьте ссылку или упоминание.", replyParams());
                 if (targetId === ADMIN_ID) return await message.reply("❌ Вы не можете занести себя в ЧС.", replyParams());
+
+                const existingBan = await dbGet("SELECT reason FROM blacklist WHERE user_id = ?", [String(targetId)]);
+                if (existingBan) return await message.reply("❌ Этот игрок уже находится в ЧС (забанен)!", replyParams());
                 
                 await dbRun("REPLACE INTO blacklist (user_id, reason) VALUES (?, ?)", [String(targetId), reason]);
                 const targetName = await getFullName(targetId);
@@ -1692,7 +1790,7 @@ vk.updates.on('message_event', async (context) => {
                     const count = countRow ? countRow.c : 0;
                     txt += `📍 ${data.name} (${count}/20)\n└ Свободно мест: ${20 - count}\n`;
                 }
-                txt += `\n💡 Купить: /купить дом топ [номер] [Локация]`;
+                txt += `\n💡 Купить: /купить дом топ [номер] [Локация]\n💡 Продать: /продать дом [сумма] (ответом на сообщение)`;
                 msg = txt;
             }
             if (payload.section === 'garages') {
@@ -1702,7 +1800,7 @@ vk.updates.on('message_event', async (context) => {
                     const count = countRow ? countRow.c : 0;
                     txt += `📍 ${data.name} (${count}/20)\n└ Свободно мест: ${20 - count}\n`;
                 }
-                txt += `\n💡 Купить: /купить гараж топ [номер] [Локация]`;
+                txt += `\n💡 Купить: /купить гараж топ [номер] [Локация]\n💡 Продать: /продать гараж [сумма] (ответом на сообщение)`;
                 msg = txt;
             }
             
