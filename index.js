@@ -14,6 +14,9 @@ const ADMIN_ID = 200005093141;
 const BONUS_CD = 86400; // 24 часа (в секундах)
 const FORTUNA_CD = 600;
 
+// Ссылка на стандартную аватарку (стикмен)
+const DEFAULT_PROFILE_PHOTO = 'https://vk.ru/photo-221392393_458171624'; 
+
 const vk = new VK({ 
     token: TOKEN, 
     apiVersion: '5.199',
@@ -92,6 +95,7 @@ async function initDB() {
     try { await dbRun("ALTER TABLE users ADD COLUMN car TEXT DEFAULT NULL"); } catch(e) {}
     try { await dbRun("ALTER TABLE users ADD COLUMN last_bonus_date TEXT"); } catch(e) {}
     try { await dbRun("ALTER TABLE users ADD COLUMN bonus_streak INTEGER DEFAULT 0"); } catch(e) {}
+    try { await dbRun("ALTER TABLE users ADD COLUMN profile_photo TEXT DEFAULT NULL"); } catch(e) {} // Новое поле для фото
     try { await dbRun("ALTER TABLE businesses ADD COLUMN last_withdraw INTEGER DEFAULT 0"); } catch(e) {}
     try { await dbRun("ALTER TABLE games ADD COLUMN start_time INTEGER"); } catch(e) {}
     try { await dbRun("ALTER TABLE blacklist ADD COLUMN until INTEGER DEFAULT 0"); } catch(e) {}
@@ -175,6 +179,20 @@ function formatMoney(num) {
     let n = Number(num);
     if (isNaN(n) || !isFinite(n)) n = 0;
     return n.toLocaleString('ru-RU'); 
+}
+
+// Функция для загрузки фото профиля
+async function updateProfilePhoto(userId, photoUrl) {
+    try {
+        const attachment = await vk.upload.messagePhoto({
+            source: { value: photoUrl }
+        });
+        await dbRun("UPDATE users SET profile_photo = ? WHERE user_id = ?", [attachment.toString(), String(userId)]);
+        return attachment.toString();
+    } catch (e) {
+        console.error("Ошибка загрузки фото профиля:", e);
+        return null;
+    }
 }
 
 async function getTargetAndReason(message, cmdName) {
@@ -427,7 +445,7 @@ vk.updates.on('chat_invite_user', async (context) => {
                     random_id: Math.floor(Math.random() * 1000000000),
                     disable_mentions: 1
                 });
-            } catch(e) {} // Если бот не админ, он просто не сможет выгнать, и ничего не произойдет.
+            } catch(e) {} 
         }
     }
 
@@ -616,7 +634,7 @@ vk.updates.on('message_new', async (message) => {
             }
         }
 
-        const validCmds = ['стакан', 'кубик', 'монетка', 'дрим', 'краш', 'рулетка', 'рул', 'автомат', 'блэкджек', 'мины', 'топ', 'профиль', 'баланс', 'бизнес', 'машины', 'работа', 'бонус', 'фортуна', 'казино', 'help', 'помощь', 'start', 'начать', 'transfer', 'перевод', 'duel', 'вывести', 'мойбизнес', 'закрыть', 'rep', 'реп', 'промолист', 'promo', 'купить', 'купитьбиз', 'чсб', 'разчсб', 'kick', 'выдать', 'обнулить', 'создать', 'cp', 'ping', 'пинг', 'убрать', 'настройки', 'дом', 'дома', 'гараж', 'гаражи', 'продать', 'бан', 'kl', 'mute', 'unmute', 'размут', 'unban', 'разбан', 'заморозить', 'разморозить', 'снять заморозку', 'снять заморозка', 'unfreeze', 'pr', 'sellcar', 'слить', 'топдом', 'topdom', 'топгараж', 'topgarage'];
+        const validCmds = ['стакан', 'кубик', 'монетка', 'дрим', 'краш', 'рулетка', 'рул', 'автомат', 'блэкджек', 'мины', 'топ', 'профиль', 'баланс', 'бизнес', 'машины', 'работа', 'бонус', 'фортуна', 'казино', 'help', 'помощь', 'start', 'начать', 'transfer', 'перевод', 'duel', 'вывести', 'мойбизнес', 'закрыть', 'rep', 'реп', 'промолист', 'promo', 'купить', 'купитьбиз', 'чсб', 'разчсб', 'kick', 'выдать', 'обнулить', 'создать', 'cp', 'ping', 'пинг', 'убрать', 'настройки', 'дом', 'дома', 'гараж', 'гаражи', 'продать', 'бан', 'kl', 'mute', 'unmute', 'размут', 'unban', 'разбан', 'заморозить', 'разморозить', 'снять заморозку', 'снять заморозка', 'unfreeze', 'pr', 'sellcar', 'слить', 'дондом', 'донтоп', 'топдом', 'topdom', 'топгараж', 'topgarage', 'одеть'];
         const isMainButton = text.includes('работа') || text.includes('рулетка') || text.includes('профиль') || text.includes('топ');
 
         if (!text.startsWith('/') && !validCmds.includes(cmdWord) && !isMainButton) {
@@ -696,9 +714,9 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(`🏓 Понг!\n\n⚡ Скорость соединения: ${ping} мс\n📊 Статус сети: ${status}`, replyParams());
         }
 
-        // --- ПРОФИЛЬ ---
+        // --- ПРОФИЛЬ С ФОТО ---
         if (cleanText.includes('профиль') || cleanText.includes('баланс')) {
-            const uInfo = await dbGet("SELECT xp, level, reg_date, car FROM users WHERE user_id = ?", [String(userId)]);
+            const uInfo = await dbGet("SELECT xp, level, reg_date, car, profile_photo FROM users WHERE user_id = ?", [String(userId)]);
             const lvl = uInfo.level || 1;
             const xp = uInfo.xp || 0;
             const needXp = lvl * 500;
@@ -711,9 +729,41 @@ vk.updates.on('message_new', async (message) => {
             const houseStr = houseData ? `${houseData.location} (Т${houseData.tier})` : "Нет";
             const garageStr = garageData ? `${garageData.location} (Т${garageData.tier})` : "Нет";
 
-            const profText = `🖼️ ━━━━━━━━━━━━━━━━━━━━━━ 🖼️\n      👑 ПРОФИЛЬ ИГРОКА 👑\n🖼️ ━━━━━━━━━━━━━━━━━━━━━━ 🖼️\n\n👤 ${await getFullName(userId)}\n🆔 ID: ${userId}\n\n💵 Баланс: ${formatMoney(balance)}$\n⭐ Репутация: ${rep}\n📊 Уровень: ${lvl} (${xp}/${needXp} XP)\n\n🏠 Дом: ${houseStr}\n🏘️ Гараж: ${garageStr}\n🚗 Машина: ${car}\n\n📅 Регистрация: ${date}\n`;
+            // Пример поля одежды (можешь добавить в БД, если нужно)
+            const clothesStr = "Стандартная одежда"; 
 
-            return await message.reply(profText, replyParams(isLs ? mainKb : undefined));
+            const profText = `🏠 Профиль ${await getFullName(userId)}\n\n💵 Баланс: ${formatMoney(balance)}$\n🍌 Писька: 1 см (Неопытный писечник)\n💪 Уровень: ${lvl} (${xp}/${needXp})\n😋 Репутация: ${rep}\n👕 Одежда: ${clothesStr}\n🏠 Дом: ${houseStr}\n🏘️ Гараж: ${garageStr}\n🚗 Машина: ${car}\n🆔 ID: ${userId}\n👀 Дата регистрации: ${date}`;
+
+            let attachment = uInfo.profile_photo;
+
+            // Если фото нет, загружаем стикмена
+            if (!attachment) {
+                attachment = await updateProfilePhoto(userId, DEFAULT_PROFILE_PHOTO);
+            }
+
+            return await message.reply({
+                message: profText,
+                attachment: attachment || undefined,
+                disable_mentions: 1
+            });
+        }
+
+        // --- ТЕСТОВАЯ СМЕНА ОДЕЖДЫ ---
+        if (cleanText.startsWith('одеть')) {
+            const clothesName = cleanText.replace('одеть', '').trim();
+            if (!clothesName) return await message.reply("❌ Укажите название одежды. Пример: /одеть костюм");
+            
+            // Здесь ты можешь добавить логику сохранения одежды в БД.
+            // В данном примере мы просто меняем фото профиля на заглушку.
+            // В реальности ты будешь брать ссылку на картинку из своего магазина одежды.
+            
+            // Для примера используем рандомную картинку с котом
+            const randomClothesPhoto = 'https://sun9-22.userapi.com/impg/8h4aC_c5aF8g0V3B8Xz6Rz3W4j5k6l7m8n9o0p/Sample.jpg?size=604x604&quality=96&sign=123456789&type=album';
+            
+            // В реальном боте ты передаешь сюда ссылку на картинку конкретной одежды
+            await updateProfilePhoto(userId, randomClothesPhoto); // Если ссылка не рабочая, фото останется старым
+
+            return await message.reply(`✅ Вы успешно надели: ${clothesName}!\nФото в профиле обновлено. Проверьте /профиль`, replyParams());
         }
 
         // --- АВТОСАЛОН ---
@@ -884,12 +934,12 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(`🤝 Заявка на покупку!\n\n👤 Продавец: ${await getFullName(userId)}\n📦 Товар: ${typeName} в ${myProp.location} (Т${myProp.tier})\n💰 Цена: ${formatMoney(price)}$\n\n👉 ${buyerName}, нажмите кнопку ниже, чтобы купить.`, replyParams(dealKb));
         }
 
-        // --- ТОП ДОМОВ / ГАРАЖЕЙ ---
-        if (cleanText === 'топдом' || cleanText === 'topdom' || cleanText === 'топ дом' || cleanText === 'топ дома') {
+        // --- ДОН ДОМ / ДОН ГАРАЖ ---
+        if (cleanText === 'дон дом' || cleanText === 'дондом' || cleanText === 'дон дома') {
             const rows = await dbAll("SELECT p.owner_id, p.location, p.tier, u.balance FROM properties p JOIN users u ON p.owner_id = u.user_id WHERE p.type = 'house' AND p.tier <= 10 ORDER BY p.tier DESC, u.balance DESC LIMIT 10");
             if (rows.length === 0) return await message.reply("❌ Пока никто не купил дома с Т1 по Т10.");
             
-            let txt = "🏠 ТОП ВЛАДЕЛЬЦЕВ ДОМОВ (Т1 - Т10)\n────────────────────\n";
+            let txt = "🏠 ДОНЫ ДОМОВ (Т1 - Т10)\n────────────────────\n";
             const userIds = [...new Set(rows.map(r => r.owner_id))];
             let usersInfo = [];
             try { usersInfo = await vk.api.users.get({ user_ids: userIds.join(','), fields: 'deactivated' }); } catch(e) {}
@@ -902,11 +952,11 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(txt, replyParams());
         }
 
-        if (cleanText === 'топгараж' || cleanText === 'topgarage' || cleanText === 'топ гараж' || cleanText === 'топ гаражи') {
+        if (cleanText === 'дон гараж' || cleanText === 'донгараж' || cleanText === 'дон гаражи') {
             const rows = await dbAll("SELECT p.owner_id, p.location, p.tier, u.balance FROM properties p JOIN users u ON p.owner_id = u.user_id WHERE p.type = 'garage' AND p.tier <= 10 ORDER BY p.tier DESC, u.balance DESC LIMIT 10");
             if (rows.length === 0) return await message.reply("❌ Пока никто не купил гаражи с Т1 по Т10.");
             
-            let txt = "🏘️ ТОП ВЛАДЕЛЬЦЕВ ГАРАЖЕЙ (Т1 - Т10)\n────────────────────\n";
+            let txt = "🏘️ ДОНЫ ГАРАЖЕЙ (Т1 - Т10)\n────────────────────\n";
             const userIds = [...new Set(rows.map(r => r.owner_id))];
             let usersInfo = [];
             try { usersInfo = await vk.api.users.get({ user_ids: userIds.join(','), fields: 'deactivated' }); } catch(e) {}
@@ -1579,7 +1629,7 @@ vk.updates.on('message_new', async (message) => {
                 if (targetId === ADMIN_ID) return await message.reply("❌ Вы не можете сбросить себя.", replyParams());
 
                 await dbRun("DELETE FROM properties WHERE owner_id = ?", [String(targetId)]);
-                await dbRun("UPDATE users SET balance = 0, reputation = 0, xp = 0, level = 1, duel_wins = 0, bonus_count = 0, car = NULL, last_bonus_date = NULL, bonus_streak = 0 WHERE user_id = ?", [String(targetId)]);
+                await dbRun("UPDATE users SET balance = 0, reputation = 0, xp = 0, level = 1, duel_wins = 0, bonus_count = 0, car = NULL, last_bonus_date = NULL, bonus_streak = 0, profile_photo = NULL WHERE user_id = ?", [String(targetId)]);
                 
                 const targetName = await getFullName(targetId);
                 return await message.reply(`💥 Игрок ${targetName} был полностью сброшен! Дома, гаражи, машины, бонусы и уровни обнулены. Недвижимость освобождена для других.`, replyParams());
@@ -2032,7 +2082,7 @@ vk.updates.on('message_event', async (context) => {
             await safeAnswer();
             let msg = "";
             if (payload.section === 'games') msg = "🎰 Игровые команды:\n/рулетка [цвет/чет] [ставка]\n/краш [автостоп] [ставка]\n/монетка [орел/решка] [ставка]\n/стакан [1-3] [ставка]\n/кубик [1-6] [ставка]\n/автомат [ставка]\n/блэкджек [ставка]\n/дрим [1-5] [ставка]\n/мины [ставка]\n/фортуна\n\n⚠️ Мин. ставка: 100$. Ставка 'вб' разрешена.";
-            if (payload.section === 'eco') msg = "💼 Экономика:\n/бизнес\n/купитьбиз [название]\n/мойбизнес\n/вывести\n/закрыть бизнес\n/бонус\n/transfer [сумма] (ответом)\n/duel [сумма]\n/promo [код]\n/промолист\n/машины\n/купить машина [название]\n/sellcar (слить машину)\n/топдом (топ домов Т1-Т10)\n/топгараж (топ гаражей Т1-Т10)";
+            if (payload.section === 'eco') msg = "💼 Экономика:\n/бизнес\n/купитьбиз [название]\n/мойбизнес\n/вывести\n/закрыть бизнес\n/бонус\n/transfer [сумма] (ответом)\n/duel [сумма]\n/promo [код]\n/промолист\n/машины\n/купить машина [название]\n/sellcar (слить машину)\n/дон дом (топ домов Т1-Т10)\n/дон гараж (топ гаражей Т1-Т10)\n/одеть [название]";
             if (payload.section === 'profile') msg = "👤 Профиль и прочее:\n/профиль\n/топ\n/rep +/- (ответом)\n/пинг\n\n💡 Слэш (/) в начале писать необязательно!";
             
             if (payload.section === 'houses') {
@@ -2042,7 +2092,7 @@ vk.updates.on('message_event', async (context) => {
                     const count = countRow ? countRow.c : 0;
                     txt += `📍 ${data.name} (${count}/20)\n└ Свободно мест: ${20 - count}\n`;
                 }
-                txt += `\n💡 Купить: /купить дом топ [номер] [Локация]\n💡 Продать: /продать дом [сумма] (ответом на сообщение)\n🏆 Топ: /топдом`;
+                txt += `\n💡 Купить: /купить дом топ [номер] [Локация]\n💡 Продать: /продать дом [сумма] (ответом на сообщение)\n🏆 Доны: /дон дом`;
                 msg = txt;
             }
             if (payload.section === 'garages') {
@@ -2052,7 +2102,7 @@ vk.updates.on('message_event', async (context) => {
                     const count = countRow ? countRow.c : 0;
                     txt += `📍 ${data.name} (${count}/20)\n└ Свободно мест: ${20 - count}\n`;
                 }
-                txt += `\n💡 Купить: /купить гараж топ [номер] [Локация]\n💡 Продать: /продать гараж [сумма] (ответом на сообщение)\n🏆 Топ: /топгараж`;
+                txt += `\n💡 Купить: /купить гараж топ [номер] [Локация]\n💡 Продать: /продать гараж [сумма] (ответом на сообщение)\n🏆 Доны: /дон гараж`;
                 msg = txt;
             }
             
