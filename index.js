@@ -616,7 +616,7 @@ vk.updates.on('message_new', async (message) => {
             }
         }
 
-        const validCmds = ['стакан', 'кубик', 'монетка', 'дрим', 'краш', 'рулетка', 'рул', 'автомат', 'блэкджек', 'мины', 'топ', 'профиль', 'баланс', 'бизнес', 'машины', 'работа', 'бонус', 'фортуна', 'казино', 'help', 'помощь', 'start', 'начать', 'transfer', 'перевод', 'duel', 'вывести', 'мойбизнес', 'закрыть', 'rep', 'реп', 'промолист', 'promo', 'купить', 'купитьбиз', 'чсб', 'разчсб', 'kick', 'выдать', 'обнулить', 'создать', 'cp', 'ping', 'пинг', 'убрать', 'настройки', 'дом', 'дома', 'гараж', 'гаражи', 'продать', 'бан', 'kl', 'mute', 'unmute', 'размут', 'unban', 'разбан', 'заморозить', 'разморозить', 'снять заморозку', 'снять заморозка', 'unfreeze', 'pr', 'sellcar', 'слить'];
+        const validCmds = ['стакан', 'кубик', 'монетка', 'дрим', 'краш', 'рулетка', 'рул', 'автомат', 'блэкджек', 'мины', 'топ', 'профиль', 'баланс', 'бизнес', 'машины', 'работа', 'бонус', 'фортуна', 'казино', 'help', 'помощь', 'start', 'начать', 'transfer', 'перевод', 'duel', 'вывести', 'мойбизнес', 'закрыть', 'rep', 'реп', 'промолист', 'promo', 'купить', 'купитьбиз', 'чсб', 'разчсб', 'kick', 'выдать', 'обнулить', 'создать', 'cp', 'ping', 'пинг', 'убрать', 'настройки', 'дом', 'дома', 'гараж', 'гаражи', 'продать', 'бан', 'kl', 'mute', 'unmute', 'размут', 'unban', 'разбан', 'заморозить', 'разморозить', 'снять заморозку', 'снять заморозка', 'unfreeze', 'pr', 'sellcar', 'слить', 'топдом', 'topdom', 'топгараж', 'topgarage'];
         const isMainButton = text.includes('работа') || text.includes('рулетка') || text.includes('профиль') || text.includes('топ');
 
         if (!text.startsWith('/') && !validCmds.includes(cmdWord) && !isMainButton) {
@@ -882,6 +882,41 @@ vk.updates.on('message_new', async (message) => {
 
             const buyerName = await getFullName(targetId);
             return await message.reply(`🤝 Заявка на покупку!\n\n👤 Продавец: ${await getFullName(userId)}\n📦 Товар: ${typeName} в ${myProp.location} (Т${myProp.tier})\n💰 Цена: ${formatMoney(price)}$\n\n👉 ${buyerName}, нажмите кнопку ниже, чтобы купить.`, replyParams(dealKb));
+        }
+
+        // --- ТОП ДОМОВ / ГАРАЖЕЙ ---
+        if (cleanText === 'топдом' || cleanText === 'topdom' || cleanText === 'топ дом' || cleanText === 'топ дома') {
+            const rows = await dbAll("SELECT p.owner_id, p.location, p.tier, u.balance FROM properties p JOIN users u ON p.owner_id = u.user_id WHERE p.type = 'house' AND p.tier <= 10 ORDER BY p.tier DESC, u.balance DESC LIMIT 10");
+            if (rows.length === 0) return await message.reply("❌ Пока никто не купил дома с Т1 по Т10.");
+            
+            let txt = "🏠 ТОП ВЛАДЕЛЬЦЕВ ДОМОВ (Т1 - Т10)\n────────────────────\n";
+            const userIds = [...new Set(rows.map(r => r.owner_id))];
+            let usersInfo = [];
+            try { usersInfo = await vk.api.users.get({ user_ids: userIds.join(','), fields: 'deactivated' }); } catch(e) {}
+            
+            for (const r of rows) {
+                const uInfo = usersInfo.find(u => u.id == r.owner_id);
+                const name = uInfo && !uInfo.deactivated ? `[id${uInfo.id}|${uInfo.first_name} ${uInfo.last_name || ''}]` : `[id${r.owner_id}|Игрок]`;
+                txt += `Т${r.tier} | ${r.location} — ${name}\n`;
+            }
+            return await message.reply(txt, replyParams());
+        }
+
+        if (cleanText === 'топгараж' || cleanText === 'topgarage' || cleanText === 'топ гараж' || cleanText === 'топ гаражи') {
+            const rows = await dbAll("SELECT p.owner_id, p.location, p.tier, u.balance FROM properties p JOIN users u ON p.owner_id = u.user_id WHERE p.type = 'garage' AND p.tier <= 10 ORDER BY p.tier DESC, u.balance DESC LIMIT 10");
+            if (rows.length === 0) return await message.reply("❌ Пока никто не купил гаражи с Т1 по Т10.");
+            
+            let txt = "🏘️ ТОП ВЛАДЕЛЬЦЕВ ГАРАЖЕЙ (Т1 - Т10)\n────────────────────\n";
+            const userIds = [...new Set(rows.map(r => r.owner_id))];
+            let usersInfo = [];
+            try { usersInfo = await vk.api.users.get({ user_ids: userIds.join(','), fields: 'deactivated' }); } catch(e) {}
+            
+            for (const r of rows) {
+                const uInfo = usersInfo.find(u => u.id == r.owner_id);
+                const name = uInfo && !uInfo.deactivated ? `[id${uInfo.id}|${uInfo.first_name} ${uInfo.last_name || ''}]` : `[id${r.owner_id}|Игрок]`;
+                txt += `Т${r.tier} | ${r.location} — ${name}\n`;
+            }
+            return await message.reply(txt, replyParams());
         }
 
         // --- КАЗИНО ---
@@ -1997,7 +2032,7 @@ vk.updates.on('message_event', async (context) => {
             await safeAnswer();
             let msg = "";
             if (payload.section === 'games') msg = "🎰 Игровые команды:\n/рулетка [цвет/чет] [ставка]\n/краш [автостоп] [ставка]\n/монетка [орел/решка] [ставка]\n/стакан [1-3] [ставка]\n/кубик [1-6] [ставка]\n/автомат [ставка]\n/блэкджек [ставка]\n/дрим [1-5] [ставка]\n/мины [ставка]\n/фортуна\n\n⚠️ Мин. ставка: 100$. Ставка 'вб' разрешена.";
-            if (payload.section === 'eco') msg = "💼 Экономика:\n/бизнес\n/купитьбиз [название]\n/мойбизнес\n/вывести\n/закрыть бизнес\n/бонус\n/transfer [сумма] (ответом)\n/duel [сумма]\n/promo [код]\n/промолист\n/машины\n/купить машина [название]\n/sellcar (слить машину)";
+            if (payload.section === 'eco') msg = "💼 Экономика:\n/бизнес\n/купитьбиз [название]\n/мойбизнес\n/вывести\n/закрыть бизнес\n/бонус\n/transfer [сумма] (ответом)\n/duel [сумма]\n/promo [код]\n/промолист\n/машины\n/купить машина [название]\n/sellcar (слить машину)\n/топдом (топ домов Т1-Т10)\n/топгараж (топ гаражей Т1-Т10)";
             if (payload.section === 'profile') msg = "👤 Профиль и прочее:\n/профиль\n/топ\n/rep +/- (ответом)\n/пинг\n\n💡 Слэш (/) в начале писать необязательно!";
             
             if (payload.section === 'houses') {
@@ -2007,7 +2042,7 @@ vk.updates.on('message_event', async (context) => {
                     const count = countRow ? countRow.c : 0;
                     txt += `📍 ${data.name} (${count}/20)\n└ Свободно мест: ${20 - count}\n`;
                 }
-                txt += `\n💡 Купить: /купить дом топ [номер] [Локация]\n💡 Продать: /продать дом [сумма] (ответом на сообщение)`;
+                txt += `\n💡 Купить: /купить дом топ [номер] [Локация]\n💡 Продать: /продать дом [сумма] (ответом на сообщение)\n🏆 Топ: /топдом`;
                 msg = txt;
             }
             if (payload.section === 'garages') {
@@ -2017,7 +2052,7 @@ vk.updates.on('message_event', async (context) => {
                     const count = countRow ? countRow.c : 0;
                     txt += `📍 ${data.name} (${count}/20)\n└ Свободно мест: ${20 - count}\n`;
                 }
-                txt += `\n💡 Купить: /купить гараж топ [номер] [Локация]\n💡 Продать: /продать гараж [сумма] (ответом на сообщение)`;
+                txt += `\n💡 Купить: /купить гараж топ [номер] [Локация]\n💡 Продать: /продать гараж [сумма] (ответом на сообщение)\n🏆 Топ: /топгараж`;
                 msg = txt;
             }
             
