@@ -16,7 +16,14 @@ const FORTUNA_CD = 600;
 
 // Прямая ссылка на картинку для профиля
 const PROFILE_PHOTO_URL = 'https://sun9-72.vkuserphoto.ru/s/v1/ig2/YNkLzyOfJjTTcjgSSuMgbqiNkNAf5lsXNkJ6PBZnpvPh3t6M2OX2KugvgTnTniTxhlNgbc2daekc1IqxA0LPwUMb.jpg?quality=95&as=32x22,48x34,72x50,108x76,160x112,240x168,277x194&from=bu&u=lu3E3ggWqF0yEAFf92En4aIiZtuv0TIPXL9GxEDIiJ4&cs=277x0';
-let cachedProfilePhoto = null; // Кэш, чтобы не загружать фото каждый раз
+let cachedProfilePhoto = null; // Кэш, чтобы не загружать фото профиля каждый раз
+
+// Массив ссылок для динамических картинок в рулетке
+const ROULETTE_PHOTOS = [
+    'https://vk.ru/photo-221392393_458171207', // Твоя ссылка
+    // Сюда можешь добавить другие ссылки, разделяя запятой
+    // 'https://example.com/photo2.jpg',
+];
 
 const vk = new VK({ 
     token: TOKEN, 
@@ -404,6 +411,24 @@ const getBizKb = (authorId) => Keyboard.builder().inline()
     .callbackButton({ label: 'Повысить уровень', payload: { cmd: 'biz_upgrade', author: authorId }, color: Keyboard.SECONDARY_COLOR })
     .toString();
 
+// ===== ФУНКЦИЯ ДЛЯ ДИНАМИЧЕСКОГО ФОТО В РУЛЕТКЕ =====
+async function getRouletteAttachment() {
+    if (ROULETTE_PHOTOS.length === 0) return null;
+    
+    // Берем случайную ссылку из массива
+    const url = ROULETTE_PHOTOS[Math.floor(Math.random() * ROULETTE_PHOTOS.length)];
+    
+    try {
+        const uploaded = await vk.upload.messagePhoto({
+            source: { value: url }
+        });
+        return uploaded.toString();
+    } catch (e) {
+        console.error("Ошибка загрузки динамического фото для рулетки:", e);
+        return null;
+    }
+}
+
 // ===== ПРИВЕТСТВИЕ И АВТО-КИК ЗАБАНЕННЫХ =====
 vk.updates.on('chat_invite_user', async (context) => {
     if (context.memberId > 0) {
@@ -715,10 +740,8 @@ vk.updates.on('message_new', async (message) => {
             const houseStr = houseData ? `${houseData.location} (Т${houseData.tier})` : "Нет";
             const garageStr = garageData ? `${garageData.location} (Т${garageData.tier})` : "Нет";
 
-            // Оригинальный текст профиля
             const profText = `🏠 Профиль ${await getFullName(userId)}\n\n💵 Баланс: ${formatMoney(balance)}$\n⭐ Репутация: ${rep}\n📊 Уровень: ${lvl} (${xp}/${needXp} XP)\n\n🏠 Дом: ${houseStr}\n🏘️ Гараж: ${garageStr}\n🚗 Машина: ${car}\n\n📅 Регистрация: ${date}\n🆔 ID: ${userId}`;
 
-            // Загрузка фото (кэшируем, чтобы не грузить каждый раз)
             if (!cachedProfilePhoto) {
                 try {
                     const uploaded = await vk.upload.messagePhoto({
@@ -1326,6 +1349,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply("❌ дрим [1/2/3/4/5] [ставка]\n\nПример: дрим 5 100к", replyParams());
         }
 
+        // --- РУЛЕТКА С ДИНАМИЧЕСКИМ ФОТО ---
         if (cmdWord === 'рулетка' || cmdWord === 'рул') {
             if (parts.length >= 3) {
                 let choice = "";
@@ -1351,13 +1375,25 @@ vk.updates.on('message_new', async (message) => {
                           (["чет", "четное"].includes(choice) && res % 2 === 0 && res !== 0) ||
                           (["нечет", "нечетное"].includes(choice) && res % 2 !== 0);
 
+                // Получаем динамическое фото
+                const attachment = await getRouletteAttachment();
+                
+                const msgText = `🎰 Выпало: ${res} ${cEmoji} (${cName}, ${eName})\n\n` +
+                                (win ? `✅ Выигрыш: +${bet}$` : `😔 Проигрыш: -${bet}$`) +
+                                `\n💰 Баланс: ${formatMoney(await getBalance(userId))}$`;
+
                 if (win) {
                     await updateBalance(userId, bet);
-                    return await message.reply(`🎰 Выпало: ${res} ${cEmoji} (${cName}, ${eName})\n\n✅ Выигрыш: +${bet}$\n💰 Баланс: ${formatMoney(await getBalance(userId))}$`, replyParams(isLs ? mainKb : undefined));
                 } else {
                     await updateBalance(userId, -bet);
-                    return await message.reply(`🎰 Выпало: ${res} ${cEmoji} (${cName}, ${eName})\n\n😔 Проигрыш: -${bet}$\n💰 Баланс: ${formatMoney(await getBalance(userId))}$`, replyParams(isLs ? mainKb : undefined));
                 }
+
+                return await message.reply({
+                    message: msgText,
+                    attachment: attachment || undefined, 
+                    keyboard: isLs ? mainKb.toString() : undefined,
+                    disable_mentions: 1
+                });
             } else {
                 return await message.reply("❌ Формат: рулетка [красное/черное/чет/нечет] [ставка]", replyParams());
             }
@@ -1498,7 +1534,6 @@ vk.updates.on('message_new', async (message) => {
                 return await message.reply(`✅ Игрок ${await getFullName(targetId)} заморожен.`, replyParams());
             }
 
-            // --- ИСПРАВЛЕННЫЙ БЛОК СНЯТИЯ ЗАМОРОЗКИ ---
             if (cmdWord === 'разморозить' || cleanText.startsWith('снять заморозку') || cleanText.startsWith('снять заморозка') || cmdWord === 'unfreeze') {
                 let cmdName = 'разморозить';
                 if (cleanText.startsWith('снять заморозку')) cmdName = 'снять заморозку';
