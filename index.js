@@ -14,15 +14,12 @@ const ADMIN_ID = 200005093141;
 const BONUS_CD = 86400; // 24 часа (в секундах)
 const FORTUNA_CD = 600;
 
-// Прямая ссылка на картинку для профиля
-const PROFILE_PHOTO_URL = 'https://sun9-72.vkuserphoto.ru/s/v1/ig2/YNkLzyOfJjTTcjgSSuMgbqiNkNAf5lsXNkJ6PBZnpvPh3t6M2OX2KugvgTnTniTxhlNgbc2daekc1IqxA0LPwUMb.jpg?quality=95&as=32x22,48x34,72x50,108x76,160x112,240x168,277x194&from=bu&u=lu3E3ggWqF0yEAFf92En4aIiZtuv0TIPXL9GxEDIiJ4&cs=277x0';
-let cachedProfilePhoto = null; // Кэш, чтобы не загружать фото профиля каждый раз
+// Ссылка на стандартную аватарку (если у игрока закрыт профиль)
+const DEFAULT_PROFILE_PHOTO = 'https://sun9-72.vkuserphoto.ru/s/v1/ig2/YNkLzyOfJjTTcjgSSuMgbqiNkNAf5lsXNkJ6PBZnpvPh3t6M2OX2KugvgTnTniTxhlNgbc2daekc1IqxA0LPwUMb.jpg?quality=95&as=32x22,48x34,72x50,108x76,160x112,240x168,277x194&from=bu&u=lu3E3ggWqF0yEAFf92En4aIiZtuv0TIPXL9GxEDIiJ4&cs=277x0';
 
 // Массив ссылок для динамических картинок в рулетке
 const ROULETTE_PHOTOS = [
-    'https://vk.ru/photo-221392393_458171207', // Твоя ссылка
-    // Сюда можешь добавить другие ссылки, разделяя запятой
-    // 'https://example.com/photo2.jpg',
+    'https://vk.ru/photo-221392393_458171207', // ВНИМАНИЕ: Замени на ПРЯМУЮ ссылку (https://sun9-...), иначе ВК не загрузит!
 ];
 
 const vk = new VK({ 
@@ -415,7 +412,6 @@ const getBizKb = (authorId) => Keyboard.builder().inline()
 async function getRouletteAttachment() {
     if (ROULETTE_PHOTOS.length === 0) return null;
     
-    // Берем случайную ссылку из массива
     const url = ROULETTE_PHOTOS[Math.floor(Math.random() * ROULETTE_PHOTOS.length)];
     
     try {
@@ -429,10 +425,26 @@ async function getRouletteAttachment() {
     }
 }
 
+// ===== ФУНКЦИЯ ЗАГРУЗКИ АВАТАРКИ ПОЛЬЗОВАТЕЛЯ (ДЛЯ ПРОФИЛЯ) =====
+async function getUserAvatar(userId) {
+    try {
+        // Запрашиваем фото профиля 200x200
+        const [user] = await vk.api.users.get({ user_ids: userId, fields: 'photo_200' });
+        const avatarUrl = user.photo_200 || DEFAULT_PROFILE_PHOTO;
+        
+        const uploaded = await vk.upload.messagePhoto({
+            source: { value: avatarUrl }
+        });
+        return uploaded.toString();
+    } catch (e) {
+        console.error("Ошибка загрузки аватара:", e);
+        return null;
+    }
+}
+
 // ===== ПРИВЕТСТВИЕ И АВТО-КИК ЗАБАНЕННЫХ =====
 vk.updates.on('chat_invite_user', async (context) => {
     if (context.memberId > 0) {
-        // Проверка на глобальный ЧС
         const globalBan = await dbGet("SELECT reason, until FROM blacklist WHERE user_id = ?", [String(context.memberId)]);
         if (globalBan) {
             if (globalBan.until !== 0 && Date.now() > globalBan.until) {
@@ -445,7 +457,6 @@ vk.updates.on('chat_invite_user', async (context) => {
             }
         }
 
-        // Проверка на бан в конкретной беседе
         const chatBan = await dbGet("SELECT reason FROM chat_bans WHERE user_id = ? AND peer_id = ?", [String(context.memberId), String(context.peerId)]);
         if (chatBan) {
             try {
@@ -725,7 +736,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(`🏓 Понг!\n\n⚡ Скорость соединения: ${ping} мс\n📊 Статус сети: ${status}`, replyParams());
         }
 
-        // --- ПРОФИЛЬ С РЕАЛЬНОЙ ФОТОГРАФИЕЙ ---
+        // --- ПРОФИЛЬ С ДИНАМИЧЕСКИМ АВАТАРОМ ---
         if (cmdWord === 'профиль' || cmdWord === 'баланс') {
             const uInfo = await dbGet("SELECT xp, level, reg_date, car FROM users WHERE user_id = ?", [String(userId)]);
             const lvl = uInfo.level || 1;
@@ -742,20 +753,12 @@ vk.updates.on('message_new', async (message) => {
 
             const profText = `🏠 Профиль ${await getFullName(userId)}\n\n💵 Баланс: ${formatMoney(balance)}$\n⭐ Репутация: ${rep}\n📊 Уровень: ${lvl} (${xp}/${needXp} XP)\n\n🏠 Дом: ${houseStr}\n🏘️ Гараж: ${garageStr}\n🚗 Машина: ${car}\n\n📅 Регистрация: ${date}\n🆔 ID: ${userId}`;
 
-            if (!cachedProfilePhoto) {
-                try {
-                    const uploaded = await vk.upload.messagePhoto({
-                        source: { value: PROFILE_PHOTO_URL }
-                    });
-                    cachedProfilePhoto = uploaded.toString();
-                } catch(e) {
-                    console.error("Ошибка загрузки фото профиля:", e);
-                }
-            }
+            // Получаем аватарку самого пользователя
+            const attachment = await getUserAvatar(userId);
 
             return await message.reply({
                 message: profText,
-                attachment: cachedProfilePhoto || undefined,
+                attachment: attachment || undefined,
                 disable_mentions: 1
             });
         }
