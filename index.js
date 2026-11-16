@@ -43,6 +43,50 @@ const gameCooldowns = new Map();
 const adminStates = new Map(); 
 const spamCache = new Map(); 
 const chsbNotifyCache = new Map(); 
+// ===== МАТЕМАТИЧЕСКАЯ ВИКТОРИНА В БЕСЕДЕ =====
+const TARGET_PEER_ID = 2000191477; // ID беседы (191477)
+let currentMathTask = null; // { answer: number, reward: number }
+
+function generateMathTask() {
+    const ops = ['+', '-', '*'];
+    const op = ops[Math.floor(Math.random() * ops.length)];
+    let a, b, ans;
+
+    if (op === '+') {
+        a = Math.floor(Math.random() * 80) + 10;
+        b = Math.floor(Math.random() * 80) + 10;
+        ans = a + b;
+    } else if (op === '-') {
+        a = Math.floor(Math.random() * 80) + 20;
+        b = Math.floor(Math.random() * (a - 10)) + 5;
+        ans = a - b;
+    } else {
+        a = Math.floor(Math.random() * 12) + 2;
+        b = Math.floor(Math.random() * 12) + 2;
+        ans = a * b;
+    }
+
+    const reward = 15000;
+    return {
+        question: `${a} ${op} ${b}`,
+        answer: ans,
+        reward: reward
+    };
+}
+
+// Запуск таймера викторины (каждые 5 минут)
+setInterval(async () => {
+    try {
+        currentMathTask = generateMathTask();
+        await vk.api.messages.send({
+            peer_id: TARGET_PEER_ID,
+            message: `🧠 Внимание, математическая викторина!\n\nРешите пример: ${currentMathTask.question} = ?\n💰 Награда первому решившему: ${formatMoney(currentMathTask.reward)} монет!`,
+            random_id: Math.floor(Math.random() * 1000000000)
+        });
+    } catch (e) {
+        console.error("Ошибка отправки викторины:", e);
+    }
+}, 5 * 60 * 1000);
 
 // Данные бизнесов
 const BIZ_DATA = {
@@ -408,6 +452,18 @@ const getSettingsKb = async (enabled, limit, time, mute) => {
     kb.callbackButton({ label: `Мут (мин): ${mute}`, payload: { cmd: 'settings_edit', field: 'mute' }, color: Keyboard.SECONDARY_COLOR });
     return kb.toString();
 };
+        // --- ПРОВЕРКА ОТВЕТА НА ВИКТОРИНУ ---
+        if (peerId === TARGET_PEER_ID && currentMathTask) {
+            const parsedAns = parseInt(cleanText, 10);
+            if (!isNaN(parsedAns) && parsedAns === currentMathTask.answer) {
+                const reward = currentMathTask.reward;
+                currentMathTask = null; // Сбрасываем задачу, чтобы награду получил только первый
+
+                await updateBalance(userId, reward);
+                const name = await getFullName(userId);
+                return await message.reply(`🎉 Правильно! ${name} первым решил пример и получил ${formatMoney(reward)} 💰!`);
+            }
+        }
 
 const getDuelKb = (duelId) => {
     return Keyboard.builder().inline().callbackButton({
