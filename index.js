@@ -15,6 +15,7 @@ const ADMIN_ID = 200005093141;
 const BONUS_CD = 86400; // 24 часа (в секундах)
 const FORTUNA_CD = 600;
 
+// Запасная ссылка, если у игрока нет аватарки (или она закрыта)
 const DEFAULT_PROFILE_PHOTO = 'https://sun9-72.vkuserphoto.ru/s/v1/ig2/YNkLzyOfJjTTcjgSSuMgbqiNkNAf5lsXNkJ6PBZnpvPh3t6M2OX2KugvgTnTniTxhlNgbc2daekc1IqxA0LPwUMb.jpg?quality=95&as=32x22,48x34,72x50,108x76,160x112,240x168,277x194&from=bu&u=lu3E3ggWqF0yEAFf92En4aIiZtuv0TIPXL9GxEDIiJ4&cs=277x0';
 
 const ROULETTE_PHOTOS = [
@@ -28,50 +29,14 @@ const vk = new VK({
 });
 
 const DATA_DIR = './data';
-if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR);
-}
-
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
 const DB_FILE = path.join(DATA_DIR, 'game.db');
 
 // ===== БАЗА ДАННЫХ =====
 const db = new sqlite3.Database(DB_FILE);
-
-const dbRun = (query, params = []) => {
-    return new Promise((res, rej) => {
-        db.run(query, params, function(e) { 
-            if (e) {
-                rej(e); 
-            } else {
-                res(this); 
-            }
-        });
-    });
-};
-
-const dbGet = (query, params = []) => {
-    return new Promise((res, rej) => {
-        db.get(query, params, (e, r) => {
-            if (e) {
-                rej(e); 
-            } else {
-                res(r);
-            }
-        });
-    });
-};
-
-const dbAll = (query, params = []) => {
-    return new Promise((res, rej) => {
-        db.all(query, params, (e, r) => {
-            if (e) {
-                rej(e); 
-            } else {
-                res(r);
-            }
-        });
-    });
-};
+const dbRun = (query, params = []) => new Promise((res, rej) => db.run(query, params, function(e) { e ? rej(e) : res(this); }));
+const dbGet = (query, params = []) => new Promise((res, rej) => db.get(query, params, (e, r) => e ? rej(e) : res(r)));
+const dbAll = (query, params = []) => new Promise((res, rej) => db.all(query, params, (e, r) => e ? rej(e) : res(r)));
 
 // Временные хранилища (в памяти)
 const gameCooldowns = new Map(); 
@@ -150,55 +115,28 @@ initDB();
 
 // ===== ХЕЛПЕРЫ =====
 function parseAmount(str) {
-    if (!str) {
-        return 0;
-    }
-
+    if (!str) return 0;
     str = String(str).toLowerCase().replace(/\s/g, '');
     
-    if (str.endsWith('всё') || str.endsWith('все') || str.endsWith('вб')) {
-        return 'ALL'; 
-    }
+    if (str.endsWith('всё') || str.endsWith('все') || str.endsWith('вб')) return 'ALL'; 
     
     let mult = 1;
-    if (str.endsWith('кккк') || str.endsWith('kkkk')) { 
-        mult = 1000000000000; 
-        str = str.slice(0, -4); 
-    } else if (str.endsWith('ккк') || str.endsWith('kkk')) { 
-        mult = 1000000000; 
-        str = str.slice(0, -3); 
-    } else if (str.endsWith('кк') || str.endsWith('kk')) { 
-        mult = 1000000; 
-        str = str.slice(0, -2); 
-    } else if (str.endsWith('к') || str.endsWith('k')) { 
-        mult = 1000; 
-        str = str.slice(0, -1); 
-    } else if (str.endsWith('м') || str.endsWith('m')) { 
-        mult = 1000000; 
-        str = str.slice(0, -1); 
-    }
+    if (str.endsWith('кккк') || str.endsWith('kkkk')) { mult = 1000000000000; str = str.slice(0, -4); }
+    else if (str.endsWith('ккк') || str.endsWith('kkk')) { mult = 1000000000; str = str.slice(0, -3); }
+    else if (str.endsWith('кк') || str.endsWith('kk')) { mult = 1000000; str = str.slice(0, -2); }
+    else if (str.endsWith('к') || str.endsWith('k')) { mult = 1000; str = str.slice(0, -1); }
+    else if (str.endsWith('м') || str.endsWith('m')) { mult = 1000000; str = str.slice(0, -1); }
     
     let num = parseFloat(str.replace(',', '.'));
-    if (isNaN(num)) {
-        return 0;
-    }
-    
+    if (isNaN(num)) return 0;
     return Math.floor(num * mult);
 }
 
 function formatShortMoney(num) {
-    if (num >= 1000000000000) {
-        return (num / 1000000000000).toFixed(2).replace(/\.00$/, '') + 'кккк';
-    }
-    if (num >= 1000000000) {
-        return (num / 1000000000).toFixed(2).replace(/\.00$/, '') + 'ккк';
-    }
-    if (num >= 1000000) {
-        return (num / 1000000).toFixed(2).replace(/\.00$/, '') + 'кк';
-    }
-    if (num >= 1000) {
-        return (num / 1000).toFixed(2).replace(/\.00$/, '') + 'к';
-    }
+    if (num >= 1000000000000) return (num / 1000000000000).toFixed(2).replace(/\.00$/, '') + 'кккк';
+    if (num >= 1000000000) return (num / 1000000000).toFixed(2).replace(/\.00$/, '') + 'ккк';
+    if (num >= 1000000) return (num / 1000000).toFixed(2).replace(/\.00$/, '') + 'кк';
+    if (num >= 1000) return (num / 1000).toFixed(2).replace(/\.00$/, '') + 'к';
     return num.toString();
 }
 
@@ -219,19 +157,14 @@ async function getBalance(userId) {
 async function updateBalance(userId, amount) {
     const bal = await getBalance(userId);
     let amt = Number(amount);
-    if (isNaN(amt) || !isFinite(amt)) {
-        amt = 0;
-    }
+    if (isNaN(amt) || !isFinite(amt)) amt = 0;
     const newBal = Math.floor(Number(bal) + amt);
     await dbRun("UPDATE users SET balance = ? WHERE user_id = ?", [newBal, String(userId)]);
 }
 
 async function getReputation(userId) {
     const row = await dbGet("SELECT reputation FROM users WHERE user_id = ?", [String(userId)]);
-    if (!row) {
-        return 0;
-    }
-    return (Number(row.reputation) || 0);
+    return row ? (Number(row.reputation) || 0) : 0;
 }
 
 async function updateReputation(userId, amount) {
@@ -243,16 +176,12 @@ async function getFullName(userId) {
     try {
         const [user] = await vk.api.users.get({ user_ids: userId });
         return `[id${userId}|${user.first_name} ${user.last_name || ''}]`;
-    } catch (e) { 
-        return `[id${userId}|Игрок]`; 
-    }
+    } catch { return `[id${userId}|Игрок]`; }
 }
 
 function formatMoney(num) { 
     let n = Number(num);
-    if (isNaN(n) || !isFinite(n)) {
-        n = 0;
-    }
+    if (isNaN(n) || !isFinite(n)) n = 0;
     return n.toLocaleString('ru-RU'); 
 }
 
@@ -278,9 +207,7 @@ async function getTargetAndReason(message, cmdName) {
                 if (urlMatch) {
                     try {
                         const res = await vk.api.utils.resolveScreenName({ screen_name: urlMatch[1] });
-                        if (res.type === 'user' || res.type === 'group') {
-                            targetId = res.object_id;
-                        }
+                        if (res.type === 'user' || res.type === 'group') targetId = res.object_id;
                     } catch (e) {}
                     reason = reason.replace(urlMatch[0], ''); 
                 } else {
@@ -288,9 +215,7 @@ async function getTargetAndReason(message, cmdName) {
                     if (mentionMatch) {
                         try {
                             const res = await vk.api.utils.resolveScreenName({ screen_name: mentionMatch[1] });
-                            if (res.type === 'user') {
-                                targetId = res.object_id;
-                            }
+                            if (res.type === 'user') targetId = res.object_id;
                         } catch (e) {}
                         reason = reason.replace(mentionMatch[0], ''); 
                     }
@@ -300,14 +225,12 @@ async function getTargetAndReason(message, cmdName) {
     }
 
     reason = reason.replace(/[\[\]]/g, '').replace(/"/g, '').trim();
-    if (!reason) {
-        reason = "Причина не указана";
-    }
+    if (!reason) reason = "Причина не указана";
 
     return { targetId, reason };
 }
 
-// ===== ГЕНЕРАЦИЯ ФОТО ПРОФИЛЯ С НИКОМ =====
+// ===== ГЕНЕРАЦИЯ ПРОФИЛЯ (АВАТАРКА + НИК) =====
 async function generateProfileImage(userId) {
     try {
         const [user] = await vk.api.users.get({ user_ids: userId, fields: 'photo_200' });
@@ -323,7 +246,8 @@ async function generateProfileImage(userId) {
         const banner = new Jimp(400, 50, 0x000000B0);
         canvas.composite(banner, 0, 400);
 
-        const font = await Jimp.loadFont(Jimp.FONT_SANS_32_WHITE);
+        // ИСПОЛЬЗУЕМ ШРИФТ С ПОДДЕРЖКОЙ КИРИЛЛИЦЫ (РУССКОГО)
+        const font = await Jimp.loadFont("https://cdn.jsdelivr.net/gh/Fluffffy/jimp-cyrillic-fonts@master/fonts/open-sans-32-white/open-sans-32-white.fnt");
         
         canvas.print(
             font,
@@ -819,9 +743,7 @@ vk.updates.on('message_new', async (message) => {
 
         const replyParams = (kb = undefined) => {
             const p = { disable_mentions: 1 };
-            if (kb) {
-                p.keyboard = kb;
-            }
+            if (kb) p.keyboard = kb;
             return p;
         };
 
