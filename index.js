@@ -15,7 +15,6 @@ const ADMIN_ID = 200005093141;
 const BONUS_CD = 86400; // 24 часа (в секундах)
 const FORTUNA_CD = 600;
 
-// Запасная ссылка, если у игрока нет аватарки (или она закрыта)
 const DEFAULT_PROFILE_PHOTO = 'https://sun9-72.vkuserphoto.ru/s/v1/ig2/YNkLzyOfJjTTcjgSSuMgbqiNkNAf5lsXNkJ6PBZnpvPh3t6M2OX2KugvgTnTniTxhlNgbc2daekc1IqxA0LPwUMb.jpg?quality=95&as=32x22,48x34,72x50,108x76,160x112,240x168,277x194&from=bu&u=lu3E3ggWqF0yEAFf92En4aIiZtuv0TIPXL9GxEDIiJ4&cs=277x0';
 
 const ROULETTE_PHOTOS = [
@@ -38,57 +37,14 @@ const dbRun = (query, params = []) => new Promise((res, rej) => db.run(query, pa
 const dbGet = (query, params = []) => new Promise((res, rej) => db.get(query, params, (e, r) => e ? rej(e) : res(r)));
 const dbAll = (query, params = []) => new Promise((res, rej) => db.all(query, params, (e, r) => e ? rej(e) : res(r)));
 
-// Временные хранилища (в памяти)
 const gameCooldowns = new Map(); 
 const adminStates = new Map(); 
 const spamCache = new Map(); 
 const chsbNotifyCache = new Map(); 
-// ===== МАТЕМАТИЧЕСКАЯ ВИКТОРИНА В БЕСЕДЕ =====
-const TARGET_PEER_ID = 2000191477; // ID беседы (191477)
-let currentMathTask = null; // { answer: number, reward: number }
 
-function generateMathTask() {
-    const ops = ['+', '-', '*'];
-    const op = ops[Math.floor(Math.random() * ops.length)];
-    let a, b, ans;
+// [НОВОЕ] Хранилище для активных математических примеров
+const activeMathGames = new Map(); 
 
-    if (op === '+') {
-        a = Math.floor(Math.random() * 80) + 10;
-        b = Math.floor(Math.random() * 80) + 10;
-        ans = a + b;
-    } else if (op === '-') {
-        a = Math.floor(Math.random() * 80) + 20;
-        b = Math.floor(Math.random() * (a - 10)) + 5;
-        ans = a - b;
-    } else {
-        a = Math.floor(Math.random() * 12) + 2;
-        b = Math.floor(Math.random() * 12) + 2;
-        ans = a * b;
-    }
-
-    const reward = 15000;
-    return {
-        question: `${a} ${op} ${b}`,
-        answer: ans,
-        reward: reward
-    };
-}
-
-// Запуск таймера викторины (каждые 5 минут)
-setInterval(async () => {
-    try {
-        currentMathTask = generateMathTask();
-        await vk.api.messages.send({
-            peer_id: TARGET_PEER_ID,
-            message: `🧠 Внимание, математическая викторина!\n\nРешите пример: ${currentMathTask.question} = ?\n💰 Награда первому решившему: ${formatMoney(currentMathTask.reward)} монет!`,
-            random_id: Math.floor(Math.random() * 1000000000)
-        });
-    } catch (e) {
-        console.error("Ошибка отправки викторины:", e);
-    }
-}, 5 * 60 * 1000);
-
-// Данные бизнесов
 const BIZ_DATA = {
     'шаурма': { name: '🌯 Шаурма', price: 500000, baseIncome: 2000 },
     'кафе': { name: '☕ Кафе', price: 1500000, baseIncome: 4000 },
@@ -97,7 +53,6 @@ const BIZ_DATA = {
     'пятерочка': { name: '🏪 24/7 Пятёрочка', price: 50000000, baseIncome: 15000 }
 };
 
-// ===== АВТОСАЛОН =====
 const CARS_DATA = {
     'м5 ф90': { name: 'BMW M5 F90', price: 15000000, sellPrice: 10000000 },
     'м5 ф10': { name: 'BMW M5 F10', price: 8000000, sellPrice: 5000000 },
@@ -108,7 +63,6 @@ const CARS_DATA = {
     'порше': { name: 'Porsche 911 Turbo', price: 28000000, sellPrice: 20000000 }
 };
 
-// ===== НЕДВИЖИМОСТЬ =====
 const PROPERTY_DATA = {
     'нижегородская': { name: 'Нижегородская', housePrice: 5000000, garagePrice: 1000000 },
     'рублевка': { name: 'Рублевка', housePrice: 25000000, garagePrice: 5000000 },
@@ -134,6 +88,9 @@ async function initDB() {
     await dbRun("CREATE TABLE IF NOT EXISTS work_cd (user_id TEXT PRIMARY KEY, count INTEGER DEFAULT 0, last_reset INTEGER)");
     await dbRun("CREATE TABLE IF NOT EXISTS properties (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT, location TEXT, tier INTEGER, owner_id TEXT)");
     await dbRun("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)");
+    
+    // [НОВОЕ] Таблица для сим-карт
+    await dbRun("CREATE TABLE IF NOT EXISTS phones (number TEXT PRIMARY KEY, user_id TEXT UNIQUE)");
 
     try { await dbRun("ALTER TABLE users ADD COLUMN reputation INTEGER DEFAULT 0"); } catch(e) {}
     try { await dbRun("ALTER TABLE users ADD COLUMN xp INTEGER DEFAULT 0"); } catch(e) {}
@@ -147,6 +104,9 @@ async function initDB() {
     try { await dbRun("ALTER TABLE businesses ADD COLUMN last_withdraw INTEGER DEFAULT 0"); } catch(e) {}
     try { await dbRun("ALTER TABLE games ADD COLUMN start_time INTEGER"); } catch(e) {}
     try { await dbRun("ALTER TABLE blacklist ADD COLUMN until INTEGER DEFAULT 0"); } catch(e) {}
+    
+    // [НОВОЕ] Колонка для телефона в профиле
+    try { await dbRun("ALTER TABLE users ADD COLUMN phone TEXT DEFAULT 'Нет'"); } catch(e) {}
     
     await dbRun("INSERT OR IGNORE INTO settings (key, value) VALUES ('antispam_enabled', '0')");
     await dbRun("INSERT OR IGNORE INTO settings (key, value) VALUES ('antispam_limit', '5')");
@@ -290,7 +250,7 @@ async function generateProfileImage(userId) {
         const banner = new Jimp(400, 50, 0x000000B0);
         canvas.composite(banner, 0, 400);
 
-        // ИСПОЛЬЗУЕМ ШРИФТ С ПОДДЕРЖКОЙ КИРИЛЛИЦЫ (РУССКОГО)
+        // ИСПРАВЛЕНО: добавлен await перед загрузкой шрифта
         const font = await Jimp.loadFont("https://cdn.jsdelivr.net/gh/Fluffffy/jimp-cyrillic-fonts@master/fonts/open-sans-32-white/open-sans-32-white.fnt");
         
         canvas.print(
@@ -452,18 +412,6 @@ const getSettingsKb = async (enabled, limit, time, mute) => {
     kb.callbackButton({ label: `Мут (мин): ${mute}`, payload: { cmd: 'settings_edit', field: 'mute' }, color: Keyboard.SECONDARY_COLOR });
     return kb.toString();
 };
-        // --- ПРОВЕРКА ОТВЕТА НА ВИКТОРИНУ ---
-        if (peerId === TARGET_PEER_ID && currentMathTask) {
-            const parsedAns = parseInt(cleanText, 10);
-            if (!isNaN(parsedAns) && parsedAns === currentMathTask.answer) {
-                const reward = currentMathTask.reward;
-                currentMathTask = null; // Сбрасываем задачу, чтобы награду получил только первый
-
-                await updateBalance(userId, reward);
-                const name = await getFullName(userId);
-                return await message.reply(`🎉 Правильно! ${name} первым решил пример и получил ${formatMoney(reward)} 💰!`);
-            }
-        }
 
 const getDuelKb = (duelId) => {
     return Keyboard.builder().inline().callbackButton({
@@ -579,7 +527,57 @@ vk.updates.on('chat_invite_user', async (context) => {
             });
         } catch (err) {}
     }
-});
+}); 
+
+// ===== [НОВОЕ] ТАЙМЕР ДЛЯ МАТЕМАТИЧЕСКОГО ПРИМЕРА (КАЖДЫЕ 10 МИНУТ) =====
+setInterval(async () => {
+    try {
+        // Берем все беседы, где когда-либо были сообщения
+        const chats = await dbAll("SELECT DISTINCT peer_id FROM chat_messages");
+        
+        for (const row of chats) {
+            const peerId = row.peer_id;
+            // Проверяем, что это беседа (начинается с 2000000000), а не ЛС
+            if (Number(peerId) < 2000000000) continue;
+
+            // Генерируем пример
+            const a = Math.floor(Math.random() * 100);
+            const b = Math.floor(Math.random() * 100);
+            const isPlus = Math.random() > 0.5;
+            const answer = isPlus ? a + b : a - b;
+            const exampleText = `${a} ${isPlus ? '+' : '-'} ${b} = ?`;
+
+            // Определяем сложность и награду
+            let reward = 10000; // Легкий
+            let difficultyText = '📗 Легкий';
+            if (a > 50 || b > 50) {
+                reward = 50000; // Средний
+                difficultyText = '📙 Средний';
+            }
+            if (a > 80 && b > 80) {
+                reward = 100000; // Сложный
+                difficultyText = '📕 Сложный';
+            }
+
+            // Записываем в память
+            activeMathGames.set(String(peerId), { answer, reward });
+
+            // Отправляем
+            try {
+                await vk.api.messages.send({
+                    peer_id: peerId,
+                    message: `${difficultyText} математический пример!\n⏳ Пример: ${exampleText}\n🎁 Награда: ${formatMoney(reward)} монет.\n\n➡️ Для получения награды просто напишите ответ в беседе. Первый, кто правильно ответит, получает приз! @all`,
+                    random_id: Math.floor(Math.random() * 1000000000),
+                    disable_mentions: 0
+                });
+            } catch(e) {
+                // Если бот не может писать в беседу, просто игнорируем
+            }
+        }
+    } catch (e) {
+        console.error('Ошибка в таймере математики:', e);
+    }
+}, 10 * 60 * 1000); // 10 минут
 
 // ===== ОБРАБОТКА СООБЩЕНИЙ =====
 vk.updates.on('message_new', async (message) => {
@@ -760,7 +758,19 @@ vk.updates.on('message_new', async (message) => {
             }
         }
 
-        const validCmds = ['стакан', 'кубик', 'монетка', 'дрим', 'краш', 'рулетка', 'рул', 'автомат', 'блэкджек', 'мины', 'топ', 'профиль', 'баланс', 'бизнес', 'машины', 'работа', 'бонус', 'фортуна', 'казино', 'help', 'помощь', 'start', 'начать', 'transfer', 'перевод', 'duel', 'вывести', 'мойбизнес', 'закрыть', 'rep', 'реп', 'промолист', 'promo', 'купить', 'купитьбиз', 'чсб', 'разчсб', 'kick', 'выдать', 'обнулить', 'создать', 'cp', 'ping', 'пинг', 'убрать', 'настройки', 'дом', 'дома', 'гараж', 'гаражи', 'продать', 'бан', 'kl', 'mute', 'unmute', 'размут', 'unban', 'разбан', 'заморозить', 'разморозить', 'снять', 'unfreeze', 'pr', 'sellcar', 'слить', 'дон', 'дондом', 'донгараж'];
+        // [НОВОЕ] ПРОВЕРКА ОТВЕТА НА МАТЕМАТИКУ
+        if (activeMathGames.has(String(peerId)) && !text.startsWith('/')) {
+            const game = activeMathGames.get(String(peerId));
+            const userAnswer = parseInt(text);
+            
+            if (!isNaN(userAnswer) && userAnswer === game.answer) {
+                activeMathGames.delete(String(peerId)); // Удаляем, чтобы не ответили дважды
+                await updateBalance(userId, game.reward);
+                return await message.reply(`🎁 Пользователь @id${userId} ответил правильно на пример и получает ${formatMoney(game.reward)} монет!`);
+            }
+        }
+
+        const validCmds = ['стакан', 'кубик', 'монетка', 'дрим', 'краш', 'рулетка', 'рул', 'автомат', 'блэкджек', 'мины', 'топ', 'профиль', 'баланс', 'бизнес', 'машины', 'работа', 'бонус', 'фортуна', 'казино', 'help', 'помощь', 'start', 'начать', 'transfer', 'перевод', 'duel', 'вывести', 'мойбизнес', 'закрыть', 'rep', 'реп', 'промолист', 'promo', 'купить', 'купитьбиз', 'чсб', 'разчсб', 'kick', 'выдать', 'обнулить', 'создать', 'cp', 'ping', 'пинг', 'убрать', 'настройки', 'дом', 'дома', 'гараж', 'гаражи', 'продать', 'бан', 'kl', 'mute', 'unmute', 'размут', 'unban', 'разбан', 'заморозить', 'разморозить', 'снять', 'unfreeze', 'pr', 'sellcar', 'слить', 'дон', 'дондом', 'донгараж', 'sellhome', 'restart', 'рестарт'];
         
         if (!text.startsWith('/') && !validCmds.includes(cmdWord)) {
             return; 
@@ -840,12 +850,14 @@ vk.updates.on('message_new', async (message) => {
 
         // --- ПРОФИЛЬ ---
         if (cmdWord === 'профиль' || cmdWord === 'баланс') {
-            const uInfo = await dbGet("SELECT xp, level, reg_date, car FROM users WHERE user_id = ?", [String(userId)]);
+            // [ОБНОВЛЕНО] Добавлен вывод телефона
+            const uInfo = await dbGet("SELECT xp, level, reg_date, car, phone FROM users WHERE user_id = ?", [String(userId)]);
             const lvl = uInfo.level || 1;
             const xp = uInfo.xp || 0;
             const needXp = lvl * 500;
             const date = uInfo.reg_date || new Date().toLocaleDateString('ru-RU');
             const car = uInfo.car || "Нет";
+            const phone = uInfo.phone || "Нет";
             
             const houseData = await dbGet("SELECT location, tier FROM properties WHERE owner_id = ? AND type = 'house'", [String(userId)]);
             const garageData = await dbGet("SELECT location, tier FROM properties WHERE owner_id = ? AND type = 'garage'", [String(userId)]);
@@ -853,7 +865,7 @@ vk.updates.on('message_new', async (message) => {
             const houseStr = houseData ? `${houseData.location} (Т${houseData.tier})` : "Нет";
             const garageStr = garageData ? `${garageData.location} (Т${garageData.tier})` : "Нет";
 
-            const profText = `🏠 Профиль ${await getFullName(userId)}\n\n💵 Баланс: ${formatMoney(balance)}$\n⭐ Репутация: ${rep}\n📊 Уровень: ${lvl} (${xp}/${needXp} XP)\n\n🏠 Дом: ${houseStr}\n🏘️ Гараж: ${garageStr}\n🚗 Машина: ${car}\n\n📅 Регистрация: ${date}\n🆔 ID: ${userId}`;
+            const profText = `🏠 Профиль ${await getFullName(userId)}\n\n💵 Баланс: ${formatMoney(balance)}$\n⭐ Репутация: ${rep}\n📊 Уровень: ${lvl} (${xp}/${needXp} XP)\n📱 Телефон: ${phone}\n\n🏠 Дом: ${houseStr}\n🏘️ Гараж: ${garageStr}\n🚗 Машина: ${car}\n\n📅 Регистрация: ${date}\n🆔 ID: ${userId}`;
 
             let attachment = null;
             try {
@@ -871,6 +883,56 @@ vk.updates.on('message_new', async (message) => {
                 attachment: attachment || undefined,
                 disable_mentions: 1
             });
+        }
+
+        // [НОВОЕ] КОМАНДА /купить сим карту
+        if (cmdWord === 'купить' && parts[1] === 'сим' && parts[2] === 'карту') {
+            const phoneNumber = parts[3];
+            if (!phoneNumber || !/^\d{4}$/.test(phoneNumber)) {
+                return await message.reply('❌ Введите ровно 4 цифры. Пример: /купить сим карту 7766', replyParams());
+            }
+
+            const user = await dbGet("SELECT phone FROM users WHERE user_id = ?", [String(userId)]);
+            if (user && user.phone && user.phone !== 'Нет') {
+                return await message.reply('❌ Вы уже купили сим-карту. Можно купить только один слот.', replyParams());
+            }
+
+            const existing = await dbGet("SELECT user_id FROM phones WHERE number = ?", [phoneNumber]);
+            if (existing) {
+                return await message.reply('❌ Этот номер уже занят другим пользователем.', replyParams());
+            }
+
+            await dbRun("INSERT INTO phones (number, user_id) VALUES (?, ?)", [phoneNumber, String(userId)]);
+            await dbRun("UPDATE users SET phone = ? WHERE user_id = ?", [phoneNumber, String(userId)]);
+
+            return await message.reply(`✅ Вы успешно купили сим-карту с номером ${phoneNumber}! Теперь он отображается в вашем профиле.`, replyParams());
+        }
+
+        // [НОВОЕ] КОМАНДА /sellhome (продажа дома)
+        if (cmdWord === 'sellhome' || (cmdWord === 'продать' && parts[1] === 'дом')) {
+            const prop = await dbGet("SELECT id, type, location FROM properties WHERE owner_id = ? AND type = 'house' LIMIT 1", [String(userId)]);
+            if (!prop) {
+                return await message.reply('❌ У вас нет дома, который можно продать государству.', replyParams());
+            }
+
+            const locData = PROPERTY_DATA[prop.location.toLowerCase()];
+            if (!locData) return await message.reply('❌ Ошибка: данные о доме не найдены.', replyParams());
+
+            const sellPrice = Math.floor(locData.housePrice * 0.70);
+            await updateBalance(userId, sellPrice);
+            await dbRun("DELETE FROM properties WHERE id = ?", [prop.id]);
+
+            return await message.reply(`🏠 Вы успешно продали свой дом государству!\n💰 Вы получили 70% от стоимости: ${formatMoney(sellPrice)} монет.`, replyParams());
+        }
+
+        // [НОВОЕ] КОМАНДА /restart (только для владельца)
+        if (cmdWord === 'restart' || cmdWord === 'рестарт') {
+            if (userId !== ADMIN_ID) {
+                return await message.reply('⛔ У вас нет прав на использование этой команды.', replyParams());
+            }
+            await message.reply('🔄 Бот перезапускается...');
+            setTimeout(() => process.exit(1), 1500);
+            return;
         }
 
         // --- АВТОСАЛОН ---
