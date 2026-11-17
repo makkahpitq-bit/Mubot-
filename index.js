@@ -309,7 +309,7 @@ function getMinesGameUI(gameId, bet, minesCount, minesArr, opened, isLoss = fals
             "Чисто! Сапёр бы гордился 👏",
             "Ещё немного, и можно забирать 💸",
             "Осторожно, мины рядом... 💣",
-            "Фортуна улыбается ты проиграешь 😉"
+            "Фортуна улыбается тебе 😉"
         ];
         const phrase = currentOpened === 0 ? randomPhrases[0] : randomPhrases[Math.floor(Math.random() * (randomPhrases.length - 1)) + 1];
 
@@ -436,8 +436,8 @@ const getMinesCountKb = (gameId) => {
 
 const getTopKb = (authorId, type = 'coins', scope = 'chat', repType = 'pos') => {
     const kb = Keyboard.builder().inline();
-    kb.callbackButton({ label: "🔥 примеры...',payload: { cmd: 'top_menu', type: 'primerov', scope, repType,author: authorId }, color: type === 'primer' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
-    kb.callbackButton({ label: '💰 Моне...', payloadd: { cmd: 'top_menu', type: 'coins', scope, repType, author: authorId }, color: type === 'coins' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
+    
+    kb.callbackButton({ label: '💰 Моне...', payload: { cmd: 'top_menu', type: 'coins', scope, repType, author: authorId }, color: type === 'coins' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     kb.callbackButton({ label: '📊 Уров...', payload: { cmd: 'top_menu', type: 'level', scope, repType, author: authorId }, color: type === 'level' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     kb.callbackButton({ label: '⭐ Репу...', payload: { cmd: 'top_menu', type: 'rep', scope, repType, author: authorId }, color: type === 'rep' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     kb.row();
@@ -545,13 +545,13 @@ setInterval(async () => {
             const b = Math.floor(Math.random() * 100);
             const isPlus = Math.random() > 0.5;
             const answer = isPlus ? a + b : a - b;
-            const exampleText = `${a} ${isPlus ? '+' : '-' ':' '*'} ${b} = ?`;
+            const exampleText = `${a} ${isPlus ? '+' : '-'} ${b} = ?`;
 
             // Определяем сложность и награду
             let reward = 10000; // Легкий
             let difficultyText = '📗 Легкий';
             if (a > 50 || b > 50) {
-                reward = 50000; // Средний
+                reward = 30000; // Средний
                 difficultyText = '📙 Средний';
             }
             if (a > 80 && b > 80) {
@@ -566,7 +566,7 @@ setInterval(async () => {
             try {
                 await vk.api.messages.send({
                     peer_id: peerId,
-                    message: `${difficultyText} математический пример!\n⏳ Пример: ${exampleText}\n🎁 Награда: ${formatMoney(reward)} монет.\n\n➡️ Для получения награды просто напишите ответ в беседе. Первый, кто правильно ответит, получает приз! '
+                    message: `${difficultyText} математический пример!\n⏳ Пример: ${exampleText}\n🎁 Награда: ${formatMoney(reward)} монет.\n\n➡️ Для получения награды просто напишите ответ в беседе. Первый, кто правильно ответит, получает приз! `,
                     random_id: Math.floor(Math.random() * 1000000000),
                     disable_mentions: 0
                 });
@@ -577,7 +577,7 @@ setInterval(async () => {
     } catch (e) {
         console.error('Ошибка в таймере математики:', e);
     }
-}, 10 * 60 * 1000); // 10 минут
+}, 10 * 60 * 1000); // 5 минут
 
 // ===== ОБРАБОТКА СООБЩЕНИЙ =====
 vk.updates.on('message_new', async (message) => {
