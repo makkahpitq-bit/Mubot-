@@ -54,7 +54,6 @@ const BIZ_DATA = {
 };
 
 const CARS_DATA = {
-    'Бугатти Диво': { name: 'Бугатти Диво', price: 7777777777, sellperice 5000000000 },
     'м5 ф90': { name: 'BMW M5 F90', price: 15000000, sellPrice: 10000000 },
     'м5 ф10': { name: 'BMW M5 F10', price: 8000000, sellPrice: 5000000 },
     'м3': { name: 'BMW M3 G80', price: 12000000, sellPrice: 8000000 },
