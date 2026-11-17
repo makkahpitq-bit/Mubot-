@@ -42,9 +42,6 @@ const adminStates = new Map();
 const spamCache = new Map(); 
 const chsbNotifyCache = new Map(); 
 
-// [НОВОЕ] Хранилище для активных математических примеров
-const activeMathGames = new Map(); 
-
 const BIZ_DATA = {
     'шаурма': { name: '🌯 Шаурма', price: 500000, baseIncome: 2000 },
     'кафе': { name: '☕ Кафе', price: 1500000, baseIncome: 4000 },
@@ -181,6 +178,49 @@ async function getFullName(userId) {
         const [user] = await vk.api.users.get({ user_ids: userId });
         return `[id${userId}|${user.first_name} ${user.last_name || ''}]`;
     } catch { return `[id${userId}|Игрок]`; }
+}
+
+// ===== [НОВОЕ] УЧАСТНИКИ БЕСЕДЫ (ДЛЯ ТОПА) =====
+async function getChatMemberIds(peerId) {
+    try {
+        const members = await vk.api.messages.getConversationMembers({ peer_id: peerId });
+        return new Set(members.items.map(m => String(m.member_id)));
+    } catch (e) {
+        return null;
+    }
+}
+
+async function buildMessagesTopText(peerId) {
+    let rows = await dbAll("SELECT user_id, count FROM chat_messages WHERE peer_id = ? ORDER BY count DESC LIMIT 30", [String(peerId)]);
+    const memberIds = await getChatMemberIds(peerId);
+    if (memberIds) {
+        rows = rows.filter(r => memberIds.has(String(r.user_id)));
+    }
+    rows = rows.slice(0, 10);
+
+    let topText = "⭐ ТОП 10 ПОЛЬЗОВАТЕЛЕЙ ПО СООБЩЕНИЯМ\n\n";
+    if (rows.length > 0) {
+        const userIds = rows.map(r => r.user_id);
+        let usersInfo = [];
+        try { 
+            usersInfo = await vk.api.users.get({ user_ids: userIds.join(','), fields: 'deactivated' }); 
+        } catch (e) {}
+        let count = 0;
+        const emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
+        for (const r of rows) {
+            const uInfo = usersInfo.find(u => u.id == r.user_id);
+            if (uInfo && !uInfo.deactivated) {
+                topText += `${emojis[count]} ${uInfo.first_name} ${uInfo.last_name || ''} - ${r.count} сообщений\n`;
+                count++;
+            }
+        }
+        if (count === 0) {
+            topText += "В этой беседе еще никто не писал.";
+        }
+    } else {
+        topText += "В этой беседе еще никто не писал.";
+    }
+    return topText;
 }
 
 function formatMoney(num) { 
@@ -434,28 +474,39 @@ const getMinesCountKb = (gameId) => {
     return kb.toString();
 };
 
-const getTopKb = (authorId, type = 'coins', scope = 'chat', repType = 'pos') => {
+const getTopKb = (authorId, type = 'messages', scope = 'chat', repType = 'pos') => {
     const kb = Keyboard.builder().inline();
-    
-    kb.callbackButton({ label: '💰 Моне...', payload: { cmd: 'top_menu', type: 'coins', scope, repType, author: authorId }, color: type === 'coins' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
-    kb.callbackButton({ label: '📊 Уров...', payload: { cmd: 'top_menu', type: 'level', scope, repType, author: authorId }, color: type === 'level' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
-    kb.callbackButton({ label: '⭐ Репу...', payload: { cmd: 'top_menu', type: 'rep', scope, repType, author: authorId }, color: type === 'rep' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
-    kb.row();
 
+    if (type === 'messages') {
+        kb.callbackButton({ label: '✨ Лиги', payload: { cmd: 'top_menu', type: 'level', scope: 'chat', repType, author: authorId }, color: Keyboard.SECONDARY_COLOR });
+        kb.callbackButton({ label: '⚔️ Дуэли', payload: { cmd: 'top_menu', type: 'duels', scope: 'chat', repType, author: authorId }, color: Keyboard.SECONDARY_COLOR });
+        kb.row();
+        kb.callbackButton({ label: '📊 Репутация', payload: { cmd: 'top_menu', type: 'rep', scope: 'chat', repType, author: authorId }, color: Keyboard.SECONDARY_COLOR });
+        kb.callbackButton({ label: '🎁 Бонус', payload: { cmd: 'top_menu', type: 'bonus', scope: 'chat', repType, author: authorId }, color: Keyboard.SECONDARY_COLOR });
+        kb.row();
+        kb.callbackButton({ label: '🪙 Монетки', payload: { cmd: 'top_menu', type: 'coins', scope: 'chat', repType, author: authorId }, color: Keyboard.SECONDARY_COLOR });
+        return kb.toString();
+    }
+
+    kb.callbackButton({ label: '✨ Лиги', payload: { cmd: 'top_menu', type: 'level', scope, repType, author: authorId }, color: type === 'level' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     kb.callbackButton({ label: '⚔️ Дуэли', payload: { cmd: 'top_menu', type: 'duels', scope, repType, author: authorId }, color: type === 'duels' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
+    kb.row();
+    kb.callbackButton({ label: '📊 Репутация', payload: { cmd: 'top_menu', type: 'rep', scope, repType, author: authorId }, color: type === 'rep' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     kb.callbackButton({ label: '🎁 Бонус', payload: { cmd: 'top_menu', type: 'bonus', scope, repType, author: authorId }, color: type === 'bonus' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     kb.row();
-    
+    kb.callbackButton({ label: '🪙 Монетки', payload: { cmd: 'top_menu', type: 'coins', scope, repType, author: authorId }, color: type === 'coins' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
+    kb.row();
+
     if (type === 'rep') {
-        kb.callbackButton({ label: '➕ Положит.', payload: { cmd: 'top_menu', type: 'rep', scope, repType: 'pos', author: authorId }, color: repType === 'pos' ? Keyboard.POSITIVE_COLOR : Keyboard.SECONDARY_COLOR });
-        kb.callbackButton({ label: '➖ Отрицат.', payload: { cmd: 'top_menu', type: 'rep', scope, repType: 'neg', author: authorId }, color: repType === 'neg' ? Keyboard.NEGATIVE_COLOR : Keyboard.SECONDARY_COLOR });
+        kb.callbackButton({ label: '➕ Положительная', payload: { cmd: 'top_menu', type: 'rep', scope, repType: 'pos', author: authorId }, color: repType === 'pos' ? Keyboard.POSITIVE_COLOR : Keyboard.SECONDARY_COLOR });
+        kb.callbackButton({ label: '➖ Отрицательная', payload: { cmd: 'top_menu', type: 'rep', scope, repType: 'neg', author: authorId }, color: repType === 'neg' ? Keyboard.NEGATIVE_COLOR : Keyboard.SECONDARY_COLOR });
         kb.row();
     }
 
-    kb.callbackButton({ label: '🌍 Общее', payload: { cmd: 'top_menu', type, scope: 'global', repType, author: authorId }, color: scope === 'global' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
+    kb.callbackButton({ label: '🌍 Общий', payload: { cmd: 'top_menu', type, scope: 'global', repType, author: authorId }, color: scope === 'global' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     kb.callbackButton({ label: '💬 В беседе', payload: { cmd: 'top_menu', type, scope: 'chat', repType, author: authorId }, color: scope === 'chat' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     kb.row();
-    
+
     kb.callbackButton({ label: '🔙 Назад', payload: { cmd: 'top_back', author: authorId }, color: Keyboard.SECONDARY_COLOR });
 
     return kb.toString();
@@ -529,55 +580,14 @@ vk.updates.on('chat_invite_user', async (context) => {
     }
 }); 
 
-// ===== [НОВОЕ] ТАЙМЕР ДЛЯ МАТЕМАТИЧЕСКОГО ПРИМЕРА (КАЖДЫЕ 10 МИНУТ) =====
-setInterval(async () => {
-    try {
-        // Берем все беседы, где когда-либо были сообщения
-        const chats = await dbAll("SELECT DISTINCT peer_id FROM chat_messages");
-        
-        for (const row of chats) {
-            const peerId = row.peer_id;
-            // Проверяем, что это беседа (начинается с 2000000000), а не ЛС
-            if (Number(peerId) < 2000000000) continue;
-
-            // Генерируем пример
-            const a = Math.floor(Math.random() * 100);
-            const b = Math.floor(Math.random() * 100);
-            const isPlus = Math.random() > 0.5;
-            const answer = isPlus ? a + b : a - b;
-            const exampleText = `${a} ${isPlus ? '+' : '-'} ${b} = ?`;
-
-            // Определяем сложность и награду
-            let reward = 10000; // Легкий
-            let difficultyText = '📗 Легкий';
-            if (a > 50 || b > 50) {
-                reward = 30000; // Средний
-                difficultyText = '📙 Средний';
-            }
-            if (a > 80 && b > 80) {
-                reward = 100000; // Сложный
-                difficultyText = '📕 Сложный';
-            }
-
-            // Записываем в память
-            activeMathGames.set(String(peerId), { answer, reward });
-
-            // Отправляем
-            try {
-                await vk.api.messages.send({
-                    peer_id: peerId,
-                    message: `${difficultyText} математический пример!\n⏳ Пример: ${exampleText}\n🎁 Награда: ${formatMoney(reward)} монет.\n\n➡️ Для получения награды просто напишите ответ в беседе. Первый, кто правильно ответит, получает приз! `,
-                    random_id: Math.floor(Math.random() * 1000000000),
-                    disable_mentions: 0
-                });
-            } catch(e) {
-                // Если бот не может писать в беседу, просто игнорируем
-            }
-        }
-    } catch (e) {
-        console.error('Ошибка в таймере математики:', e);
+// ===== [НОВОЕ] УДАЛЕНИЕ ИЗ ТОПА БЕСЕДЫ ПРИ ИСКЛЮЧЕНИИ ПОЛЬЗОВАТЕЛЯ =====
+vk.updates.on('chat_kick_user', async (context) => {
+    if (context.memberId > 0) {
+        try {
+            await dbRun("DELETE FROM chat_messages WHERE peer_id = ? AND user_id = ?", [String(context.peerId), String(context.memberId)]);
+        } catch (e) {}
     }
-}, 10 * 60 * 1000); // 5 минут
+});
 
 // ===== ОБРАБОТКА СООБЩЕНИЙ =====
 vk.updates.on('message_new', async (message) => {
@@ -755,18 +765,6 @@ vk.updates.on('message_new', async (message) => {
                 });
             } else {
                 return await message.reply("❌ Введите корректное число больше 0.");
-            }
-        }
-
-        // [НОВОЕ] ПРОВЕРКА ОТВЕТА НА МАТЕМАТИКУ
-        if (activeMathGames.has(String(peerId)) && !text.startsWith('/')) {
-            const game = activeMathGames.get(String(peerId));
-            const userAnswer = parseInt(text);
-            
-            if (!isNaN(userAnswer) && userAnswer === game.answer) {
-                activeMathGames.delete(String(peerId)); // Удаляем, чтобы не ответили дважды
-                await updateBalance(userId, game.reward);
-                return await message.reply(`🎁 Пользователь @id${userId} ответил правильно на пример и получает ${formatMoney(game.reward)} монет!`);
             }
         }
 
@@ -1168,30 +1166,8 @@ vk.updates.on('message_new', async (message) => {
 
         // --- ТОП ---
         if (cmdWord === 'топ' || cmdWord === 'top') {
-            const rows = await dbAll("SELECT user_id, count FROM chat_messages WHERE peer_id = ? ORDER BY count DESC LIMIT 10", [String(peerId)]);
-            let topText = "⭐ ТОП 10 ПОЛЬЗОВАТЕЛЕЙ ПО СООБЩЕНИЯМ\n\n";
-            
-            if (rows.length > 0) {
-                const userIds = rows.map(r => r.user_id);
-                let usersInfo = [];
-                try { 
-                    usersInfo = await vk.api.users.get({ user_ids: userIds.join(','), fields: 'deactivated' }); 
-                } catch (e) {}
-                
-                let count = 0;
-                const emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
-                for (const r of rows) {
-                    const uInfo = usersInfo.find(u => u.id == r.user_id);
-                    if (uInfo && !uInfo.deactivated) {
-                        topText += `${emojis[count]} [id${uInfo.id}|${uInfo.first_name} ${uInfo.last_name || ''}] - ${r.count} сообщений\n`;
-                        count++;
-                    }
-                }
-            } else {
-                topText += "В этой беседе еще никто не писал.";
-            }
-
-            return await message.reply(topText, replyParams(getTopKb(userId, 'coins', 'chat')));
+            const topText = await buildMessagesTopText(peerId);
+            return await message.reply(topText, replyParams(getTopKb(userId, 'messages', 'chat')));
         }
 
         // --- БИЗНЕС ---
@@ -2063,6 +2039,7 @@ vk.updates.on('message_new', async (message) => {
                         user_id: targetId,
                         group_id: GROUP_ID
                     });
+                    await dbRun("DELETE FROM chat_messages WHERE peer_id = ? AND user_id = ?", [String(peerId), String(targetId)]);
                 } catch(e) {}
 
                 const targetName = await getFullName(targetId);
@@ -2131,6 +2108,7 @@ vk.updates.on('message_new', async (message) => {
 
                 try {
                     await vk.api.messages.removeChatUser({ chat_id: chatId, user_id: targetId, group_id: GROUP_ID });
+                    await dbRun("DELETE FROM chat_messages WHERE peer_id = ? AND user_id = ?", [String(peerId), String(targetId)]);
                     return await message.reply(`${senderName} исключил(-а) из беседы пользователя ${targetName} по причине: "${reason}"`, replyParams());
                 } catch (e) {
                     return await message.reply(`⚠️ Указанный пользователь не является участником данной беседы, либо же имеет статус выше Вашего.`, replyParams());
@@ -2695,7 +2673,7 @@ vk.updates.on('message_event', async (context) => {
 
             let orderBy = "balance DESC";
             let filter = "balance > 2";
-            
+
             if (type === 'rep') {
                 if (repType === 'pos') {
                     orderBy = "reputation DESC";
@@ -2720,17 +2698,30 @@ vk.updates.on('message_event', async (context) => {
                 rows = await dbAll(`SELECT user_id, balance, reputation, level, xp, duel_wins, bonus_count FROM users WHERE ${filter} ORDER BY ${orderBy} LIMIT 10`);
             } else {
                 const chatUsers = await dbAll("SELECT user_id FROM chat_messages WHERE peer_id = ?", [String(context.peerId)]);
-                if (chatUsers.length > 0) {
-                    const ids = chatUsers.map(u => `'${u.user_id}'`).join(',');
+                const memberIds = await getChatMemberIds(context.peerId);
+                let idsRows = chatUsers;
+                if (memberIds) {
+                    idsRows = chatUsers.filter(u => memberIds.has(String(u.user_id)));
+                }
+                if (idsRows.length > 0) {
+                    const ids = idsRows.map(u => `'${u.user_id}'`).join(',');
                     rows = await dbAll(`SELECT user_id, balance, reputation, level, xp, duel_wins, bonus_count FROM users WHERE user_id IN (${ids}) AND ${filter} ORDER BY ${orderBy} LIMIT 10`);
                 }
             }
 
+            let title = "🪙 ТОП 10 ПО МОНЕТКАМ";
+            if (type === 'level') title = "✨ ТОП 10 ПО ЛИГАМ";
+            if (type === 'duels') title = "⚔️ ТОП 10 ПО ДУЭЛЯМ";
+            if (type === 'bonus') title = "🎁 ТОП 10 ПО БОНУСАМ";
+            if (type === 'rep') title = `📊 ТОП 10 ПО РЕПУТАЦИИ (${repType === 'pos' ? '➕ положительная' : '➖ отрицательная'})`;
+            title += ` (${scope === 'global' ? 'Общий' : 'В беседе'})\n\n`;
+
             if (rows.length === 0) {
                 await vk.api.messages.edit({
                     peer_id: context.peerId,
-                    message: "❌ Топ пуст.",
+                    message: title + "❌ Топ пуст.",
                     keyboard: getTopKb(payload.author, type, scope, repType),
+                    disable_mentions: 1,
                     conversation_message_id: context.conversationMessageId
                 });
                 return;
@@ -2742,17 +2733,10 @@ vk.updates.on('message_event', async (context) => {
                 usersInfo = await vk.api.users.get({ user_ids: userIds.join(','), fields: 'deactivated' }); 
             } catch (e) {}
 
-            let title = `🏆 ТОП 10 (${scope === 'global' ? 'Общий' : 'В беседе'})\n`;
-            if (type === 'coins') title += "💰 По монетам\n\n";
-            if (type === 'level') title += "📊 По уровню\n\n";
-            if (type === 'duels') title += "⚔️ По победам в дуэлях\n\n";
-            if (type === 'bonus') title += "🎁 По бонусам\n\n";
-            if (type === 'rep') title += `⭐ По репутации (${repType === 'pos' ? 'Положительная' : 'Отрицательная'})\n\n`;
-
             let topText = title;
             let count = 0;
             const emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
-            
+
             for (const r of rows) {
                 const uInfo = usersInfo.find(u => u.id == r.user_id);
                 if (uInfo && !uInfo.deactivated) {
@@ -2762,10 +2746,14 @@ vk.updates.on('message_event', async (context) => {
                     if (type === 'rep') value = `${r.reputation > 0 ? '+' : ''}${r.reputation}`;
                     if (type === 'duels') value = `${r.duel_wins} побед`;
                     if (type === 'bonus') value = `${r.bonus_count} бонусов`;
-                    
-                    topText += `${emojis[count]} [id${uInfo.id}|${uInfo.first_name} ${uInfo.last_name || ''}] — ${value}\n`;
+
+                    topText += `${emojis[count]} ${uInfo.first_name} ${uInfo.last_name || ''} - ${value}\n`;
                     count++;
                 }
+            }
+
+            if (count === 0) {
+                topText += "❌ Топ пуст.";
             }
 
             await vk.api.messages.edit({
@@ -2779,30 +2767,12 @@ vk.updates.on('message_event', async (context) => {
         }
 
         if (payload.cmd === 'top_back') {
-            const rows = await dbAll("SELECT user_id, count FROM chat_messages WHERE peer_id = ? ORDER BY count DESC LIMIT 10", [String(context.peerId)]);
-            let topText = "⭐ ТОП 10 ПОЛЬЗОВАТЕЛЕЙ ПО СООБЩЕНИЯМ\n\n";
-            
-            if (rows.length > 0) {
-                const userIds = rows.map(r => r.user_id);
-                let usersInfo = [];
-                try { usersInfo = await vk.api.users.get({ user_ids: userIds.join(','), fields: 'deactivated' }); } catch (e) {}
-                let count = 0;
-                const emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
-                for (const r of rows) {
-                    const uInfo = usersInfo.find(u => u.id == r.user_id);
-                    if (uInfo && !uInfo.deactivated) {
-                        topText += `${emojis[count]} [id${uInfo.id}|${uInfo.first_name} ${uInfo.last_name || ''}] - ${r.count} сообщений\n`;
-                        count++;
-                    }
-                }
-            } else {
-                topText += "В этой беседе еще никто не писал.";
-            }
+            const topText = await buildMessagesTopText(context.peerId);
 
             await vk.api.messages.edit({
                 peer_id: context.peerId,
                 message: topText,
-                keyboard: getTopKb(payload.author, 'coins', 'chat'),
+                keyboard: getTopKb(payload.author, 'messages', 'chat'),
                 disable_mentions: 1,
                 conversation_message_id: context.conversationMessageId
             });
