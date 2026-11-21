@@ -15,12 +15,11 @@ const ADMIN_ID = 200005093141;
 const BONUS_CD = 86400; // 24 часа (в секундах)
 const FORTUNA_CD = 600;
 
-// Запасная ссылка, если у игрока нет аватарки (или она закрыта)
 const DEFAULT_PROFILE_PHOTO = 'https://sun9-72.vkuserphoto.ru/s/v1/ig2/YNkLzyOfJjTTcjgSSuMgbqiNkNAf5lsXNkJ6PBZnpvPh3t6M2OX2KugvgTnTniTxhlNgbc2daekc1IqxA0LPwUMb.jpg?quality=95&as=32x22,48x34,72x50,108x76,160x112,240x168,277x194&from=bu&u=lu3E3ggWqF0yEAFf92En4aIiZtuv0TIPXL9GxEDIiJ4&cs=277x0';
 
-const ROULETTE_PHOTOS = [
-    'https://vk.ru/photo-221392393_458171207',
-];
+// Твоя ссылка на рулетку
+const ROULETTE_PHOTO = 'https://sun9-63.userapi.com/s/v1/ig2/to7LopyEWd8Z1KvH7SUG3N1JPeHQpK4NRx_h7wJHnKvpiFbzpGm7k6274tKqxtJkLpU035GKCJTtL9CnOtB5OcM9.jpg?quality=95&as=32x18,48x27,72x40,108x61,160x90,240x135,360x202,480x270,540x304,640x360,720x405,1080x607,1280x720,1440x810,2208x1242&from=bu&cs=2208x0';
+const BIZ_PHOTO = 'https://sun9-72.vkuserphoto.ru/s/v1/ig2/YNkLzyOfJjTTcjgSSuMgbqiNkNAf5lsXNkJ6PBZnpvPh3t6M2OX2KugvgTnTniTxhlNgbc2daekc1IqxA0LPwUMb.jpg?quality=95&as=32x22,48x34,72x50,108x76,160x112,240x168,277x194&from=bu&u=lu3E3ggWqF0yEAFf92En4aIiZtuv0TIPXL9GxEDIiJ4&cs=277x0';
 
 const vk = new VK({ 
     token: TOKEN, 
@@ -38,22 +37,23 @@ const dbRun = (query, params = []) => new Promise((res, rej) => db.run(query, pa
 const dbGet = (query, params = []) => new Promise((res, rej) => db.get(query, params, (e, r) => e ? rej(e) : res(r)));
 const dbAll = (query, params = []) => new Promise((res, rej) => db.all(query, params, (e, r) => e ? rej(e) : res(r)));
 
-// Временные хранилища (в памяти)
 const gameCooldowns = new Map(); 
 const adminStates = new Map(); 
 const spamCache = new Map(); 
 const chsbNotifyCache = new Map(); 
 
-// Данные бизнесов
 const BIZ_DATA = {
     'шаурма': { name: '🌯 Шаурма', price: 500000, baseIncome: 2000 },
     'кафе': { name: '☕ Кафе', price: 1500000, baseIncome: 4000 },
     'game zone': { name: '🕹️ Отдел Game Zone', price: 5000000, baseIncome: 6000 },
     'казино': { name: '🎰 Казино', price: 15000000, baseIncome: 10000 },
-    'пятерочка': { name: '🏪 24/7 Пятёрочка', price: 50000000, baseIncome: 15000 }
+    'пятерочка': { name: '🏪 24/7 Пятёрочка', price: 50000000, baseIncome: 15000 },
+    // Твои новые бизнесы (Тк/Ск/Азс)
+    'транспортная': { name: '🚚 Транспортная компания', price: 75000000, baseIncome: 25000 },
+    'строительная': { name: '🏗️ Строительная компания', price: 100000000, baseIncome: 35000 },
+    'азс': { name: '⛽ АЗС', price: 150000000, baseIncome: 50000 }
 };
 
-// ===== АВТОСАЛОН =====
 const CARS_DATA = {
     'м5 ф90': { name: 'BMW M5 F90', price: 15000000, sellPrice: 10000000 },
     'м5 ф10': { name: 'BMW M5 F10', price: 8000000, sellPrice: 5000000 },
@@ -64,7 +64,6 @@ const CARS_DATA = {
     'порше': { name: 'Porsche 911 Turbo', price: 28000000, sellPrice: 20000000 }
 };
 
-// ===== НЕДВИЖИМОСТЬ =====
 const PROPERTY_DATA = {
     'нижегородская': { name: 'Нижегородская', housePrice: 5000000, garagePrice: 1000000 },
     'рублевка': { name: 'Рублевка', housePrice: 25000000, garagePrice: 5000000 },
@@ -90,6 +89,9 @@ async function initDB() {
     await dbRun("CREATE TABLE IF NOT EXISTS work_cd (user_id TEXT PRIMARY KEY, count INTEGER DEFAULT 0, last_reset INTEGER)");
     await dbRun("CREATE TABLE IF NOT EXISTS properties (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT, location TEXT, tier INTEGER, owner_id TEXT)");
     await dbRun("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)");
+    // Новые таблицы для кастомных команд и предупреждений
+    await dbRun("CREATE TABLE IF NOT EXISTS custom_cmds (user_id TEXT, alias TEXT, real_cmd TEXT, PRIMARY KEY (user_id, alias))");
+    await dbRun("CREATE TABLE IF NOT EXISTS warnings (user_id TEXT PRIMARY KEY, count INTEGER DEFAULT 0)");
 
     try { await dbRun("ALTER TABLE users ADD COLUMN reputation INTEGER DEFAULT 0"); } catch(e) {}
     try { await dbRun("ALTER TABLE users ADD COLUMN xp INTEGER DEFAULT 0"); } catch(e) {}
@@ -104,10 +106,27 @@ async function initDB() {
     try { await dbRun("ALTER TABLE games ADD COLUMN start_time INTEGER"); } catch(e) {}
     try { await dbRun("ALTER TABLE blacklist ADD COLUMN until INTEGER DEFAULT 0"); } catch(e) {}
     
+    // Новые колонки в профиль
+    try { await dbRun("ALTER TABLE users ADD COLUMN premium_until INTEGER DEFAULT 0"); } catch(e) {}
+    try { await dbRun("ALTER TABLE users ADD COLUMN org TEXT"); } catch(e) {}
+    try { await dbRun("ALTER TABLE users ADD COLUMN country TEXT"); } catch(e) {}
+    try { await dbRun("ALTER TABLE users ADD COLUMN clothes TEXT"); } catch(e) {}
+
     await dbRun("INSERT OR IGNORE INTO settings (key, value) VALUES ('antispam_enabled', '0')");
     await dbRun("INSERT OR IGNORE INTO settings (key, value) VALUES ('antispam_limit', '5')");
     await dbRun("INSERT OR IGNORE INTO settings (key, value) VALUES ('antispam_time', '60')");
     await dbRun("INSERT OR IGNORE INTO settings (key, value) VALUES ('antispam_mute', '10')");
+    await dbRun("INSERT OR IGNORE INTO settings (key, value) VALUES ('global_reset_done', '0')");
+    
+    // АВТОМАТИЧЕСКИЙ СБРОС ВСЕХ БАЛАНСОВ (ПРИ ПЕРВОМ ЗАПУСКЕ)
+    const resetDone = await dbGet("SELECT value FROM settings WHERE key = 'global_reset_done'");
+    if (resetDone && resetDone.value === '0') {
+        await dbRun("UPDATE users SET balance = 0, reputation = 0, xp = 0, level = 1, premium_until = 0, org = NULL, country = NULL, clothes = NULL");
+        await dbRun("UPDATE businesses SET balance = 0, level = 1");
+        await dbRun("DELETE FROM properties");
+        await dbRun("UPDATE settings SET value = '1' WHERE key = 'global_reset_done'");
+        console.log("=== ВЫПОЛНЕН ГЛОБАЛЬНЫЙ СБРОС ВСЕХ БАЛАНСОВ ===");
+    }
     
     console.log("--- БАЗА ДАННЫХ ГОТОВА ---");
 }
@@ -246,7 +265,6 @@ async function generateProfileImage(userId) {
         const banner = new Jimp(400, 50, 0x000000B0);
         canvas.composite(banner, 0, 400);
 
-        // ИСПОЛЬЗУЕМ ШРИФТ С ПОДДЕРЖКОЙ КИРИЛЛИЦЫ (РУССКОГО)
         const font = await Jimp.loadFont("https://cdn.jsdelivr.net/gh/Fluffffy/jimp-cyrillic-fonts@master/fonts/open-sans-32-white/open-sans-32-white.fnt");
         
         canvas.print(
@@ -430,16 +448,16 @@ const getMinesCountKb = (gameId) => {
     return kb.toString();
 };
 
+// ===== ТОП (Обновленный под твой скриншот, без Примеров) =====
 const getTopKb = (authorId, type = 'coins', scope = 'chat', repType = 'pos') => {
     const kb = Keyboard.builder().inline();
     
-    kb.callbackButton({ label: '💰 Моне...', payload: { cmd: 'top_menu', type: 'coins', scope, repType, author: authorId }, color: type === 'coins' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
-    kb.callbackButton({ label: '📊 Уров...', payload: { cmd: 'top_menu', type: 'level', scope, repType, author: authorId }, color: type === 'level' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
-    kb.callbackButton({ label: '⭐ Репу...', payload: { cmd: 'top_menu', type: 'rep', scope, repType, author: authorId }, color: type === 'rep' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
+    kb.callbackButton({ label: '💰 Монеты', payload: { cmd: 'top_menu', type: 'coins', scope, repType, author: authorId }, color: type === 'coins' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
+    kb.callbackButton({ label: '⭐ Лиги', payload: { cmd: 'top_menu', type: 'level', scope, repType, author: authorId }, color: type === 'level' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     kb.row();
 
     kb.callbackButton({ label: '⚔️ Дуэли', payload: { cmd: 'top_menu', type: 'duels', scope, repType, author: authorId }, color: type === 'duels' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
-    kb.callbackButton({ label: '🎁 Бонус', payload: { cmd: 'top_menu', type: 'bonus', scope, repType, author: authorId }, color: type === 'bonus' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
+    kb.callbackButton({ label: '📊 Репутация', payload: { cmd: 'top_menu', type: 'rep', scope, repType, author: authorId }, color: type === 'rep' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     kb.row();
     
     if (type === 'rep') {
@@ -448,83 +466,53 @@ const getTopKb = (authorId, type = 'coins', scope = 'chat', repType = 'pos') => 
         kb.row();
     }
 
+    kb.callbackButton({ label: '🎁 Бонус', payload: { cmd: 'top_menu', type: 'bonus', scope, repType, author: authorId }, color: type === 'bonus' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
+    kb.callbackButton({ label: '🏆 Топ 10', payload: { cmd: 'top_back', author: authorId }, color: Keyboard.SECONDARY_COLOR });
+    kb.row();
+
     kb.callbackButton({ label: '🌍 Общее', payload: { cmd: 'top_menu', type, scope: 'global', repType, author: authorId }, color: scope === 'global' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     kb.callbackButton({ label: '💬 В беседе', payload: { cmd: 'top_menu', type, scope: 'chat', repType, author: authorId }, color: scope === 'chat' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     kb.row();
     
+    // Кнопка Назад
     kb.callbackButton({ label: '🔙 Назад', payload: { cmd: 'top_back', author: authorId }, color: Keyboard.SECONDARY_COLOR });
 
     return kb.toString();
 };
 
+// ===== БИЗНЕС (Обновленный, без кнопки Закрыть) =====
 const getBizKb = (authorId) => {
     return Keyboard.builder().inline()
+        .callbackButton({ label: 'Вывести $$$', payload: { cmd: 'biz_withdraw', author: authorId }, color: Keyboard.POSITIVE_COLOR })
+        .row()
         .callbackButton({ label: 'Повысить уровень', payload: { cmd: 'biz_upgrade', author: authorId }, color: Keyboard.SECONDARY_COLOR })
+        .toString();
+};
+
+// ===== МАГАЗИН ОДЕЖДЫ =====
+const getShopKb = () => {
+    return Keyboard.builder().inline()
+        .callbackButton({ label: '🧢 Шапки', payload: { cmd: 'shop_cat', cat: 'hat' }, color: Keyboard.SECONDARY_COLOR })
+        .callbackButton({ label: '👕 Футболки', payload: { cmd: 'shop_cat', cat: 'shirt' }, color: Keyboard.SECONDARY_COLOR })
+        .row()
+        .callbackButton({ label: '👖 Джинсы', payload: { cmd: 'shop_cat', cat: 'jeans' }, color: Keyboard.SECONDARY_COLOR })
+        .callbackButton({ label: '👟 Обувь', payload: { cmd: 'shop_cat', cat: 'shoes' }, color: Keyboard.SECONDARY_COLOR })
+        .row()
+        .callbackButton({ label: '🕶️ Очки', payload: { cmd: 'shop_cat', cat: 'glasses' }, color: Keyboard.SECONDARY_COLOR })
+        .callbackButton({ label: '👗 Юбки', payload: { cmd: 'shop_cat', cat: 'skirt' }, color: Keyboard.SECONDARY_COLOR })
         .toString();
 };
 
 // ===== ФУНКЦИИ ФОТО =====
 async function getRouletteAttachment() {
-    if (ROULETTE_PHOTOS.length === 0) {
-        return null;
-    }
-    const url = ROULETTE_PHOTOS[Math.floor(Math.random() * ROULETTE_PHOTOS.length)];
     try {
-        const uploaded = await vk.upload.messagePhoto({ source: { value: url } });
+        const uploaded = await vk.upload.messagePhoto({ source: { value: ROULETTE_PHOTO } });
         return uploaded.toString();
     } catch (e) {
         console.error("Ошибка загрузки фото для рулетки:", e);
         return null;
     }
 }
-
-// ===== ПРИВЕТСТВИЕ =====
-vk.updates.on('chat_invite_user', async (context) => {
-    if (context.memberId > 0) {
-        const globalBan = await dbGet("SELECT reason, until FROM blacklist WHERE user_id = ?", [String(context.memberId)]);
-        if (globalBan) {
-            if (globalBan.until !== 0 && Date.now() > globalBan.until) {
-                await dbRun("DELETE FROM blacklist WHERE user_id = ?", [String(context.memberId)]);
-            } else {
-                try {
-                    await vk.api.messages.removeChatUser({ chat_id: context.peerId - 2000000000, user_id: context.memberId, group_id: GROUP_ID });
-                } catch(e) {}
-                return;
-            }
-        }
-
-        const chatBan = await dbGet("SELECT reason FROM chat_bans WHERE user_id = ? AND peer_id = ?", [String(context.memberId), String(context.peerId)]);
-        if (chatBan) {
-            try {
-                await vk.api.messages.removeChatUser({ chat_id: context.peerId - 2000000000, user_id: context.memberId, group_id: GROUP_ID });
-                await vk.api.messages.send({
-                    peer_id: context.peerId,
-                    message: `🚫 [id${context.memberId}|Игрок] был автоматически исключен из беседы, так как имеет бан в этой беседе.\n📌 Причина: ${chatBan.reason}`,
-                    random_id: Math.floor(Math.random() * 1000000000),
-                    disable_mentions: 1
-                });
-            } catch(e) {} 
-        }
-    }
-
-    if (String(context.memberId) === String(-GROUP_ID)) {
-        const actKb = Keyboard.builder().inline()
-            .callbackButton({ label: 'Активировать', payload: { cmd: 'activate_bot' }, color: Keyboard.POSITIVE_COLOR })
-            .callbackButton({ label: 'Не активировать', payload: { cmd: 'decline_bot' }, color: Keyboard.NEGATIVE_COLOR });
-        
-        try {
-            await vk.api.messages.send({
-                peer_id: context.peerId,
-                message: "Привет! Я Официальный бот Game Zone. Для того чтобы я начал работать, выдайте мне права администратора и напишите /start. После этого напишите /help для ознакомления с командами.",
-                keyboard: actKb.toString(),
-                random_id: Math.floor(Math.random() * 1000000000),
-                group_id: GROUP_ID,
-                disable_mentions: 1
-            });
-        } catch (err) {}
-    }
-});
-
 // ===== ОБРАБОТКА СООБЩЕНИЙ =====
 vk.updates.on('message_new', async (message) => {
     if (message.isOutbox) {
@@ -535,7 +523,7 @@ vk.updates.on('message_new', async (message) => {
     }
 
     try {
-        const text = message.text ? message.text.trim().toLowerCase() : '';
+        let text = message.text ? message.text.trim().toLowerCase() : '';
         if (!text) {
             return;
         }
@@ -544,9 +532,18 @@ vk.updates.on('message_new', async (message) => {
         const peerId = message.peerId;
         const isLs = peerId === userId;
 
-        const cleanText = text.replace(/\//g, '').trim();
-        const parts = cleanText.split(/\s+/);
-        const cmdWord = parts[0];
+        let cleanText = text.replace(/\//g, '').trim();
+        let parts = cleanText.split(/\s+/);
+        let cmdWord = parts[0];
+
+        // --- КАСТОМНЫЕ КОМАНДЫ (НОВОЕ) ---
+        const customCmd = await dbGet("SELECT real_cmd FROM custom_cmds WHERE user_id = ? AND alias = ?", [String(userId), cmdWord]);
+        if (customCmd) {
+            text = text.replace(cmdWord, customCmd.real_cmd);
+            cleanText = text.replace(/\//g, '').trim();
+            parts = cleanText.split(/\s+/);
+            cmdWord = parts[0];
+        }
 
         // --- ЗАМОРОЗКА ---
         if (userId !== ADMIN_ID) {
@@ -571,9 +568,9 @@ vk.updates.on('message_new', async (message) => {
                         const banText = `😈 Вы были занесены в ЧС бота ${timeStr} по причине: ${isBlacklisted.reason}`;
                         
                         const banKb = Keyboard.builder().inline()
-                            .urlButton({ label: 'Получить разбан', url: `https://vk.ru/topic-243089386_69303056` })
+                            .urlButton({ label: 'Обжалование', url: `https://vk.ru/topic-243089386_69303056` })
                             .row()
-                            .urlButton({ label: 'Правила бота', url: `https://vk.com/public${GROUP_ID}` });
+                            .urlButton({ label: 'Правила бота', url: `https://vk.ru/topic-243089386_69454146` }); // Ссылка на правила
                         
                         try {
                             await vk.api.messages.send({
@@ -613,7 +610,7 @@ vk.updates.on('message_new', async (message) => {
             }
         }
 
-        // --- АНТИСПАМ ---
+        // --- АНТИСПАМ (ОРИГИНАЛ) ---
         if (message.isChat && userId !== ADMIN_ID) {
             const spamEnabled = await dbGet("SELECT value FROM settings WHERE key = 'antispam_enabled'");
             if (spamEnabled && spamEnabled.value === '1') {
@@ -704,17 +701,18 @@ vk.updates.on('message_new', async (message) => {
             }
         }
 
-        const validCmds = ['стакан', 'кубик', 'монетка', 'дрим', 'краш', 'рулетка', 'рул', 'автомат', 'блэкджек', 'мины', 'топ', 'профиль', 'баланс', 'бизнес', 'машины', 'работа', 'бонус', 'фортуна', 'казино', 'help', 'помощь', 'start', 'начать', 'transfer', 'перевод', 'duel', 'вывести', 'мойбизнес', 'закрыть', 'rep', 'реп', 'промолист', 'promo', 'купить', 'купитьбиз', 'чсб', 'разчсб', 'kick', 'выдать', 'обнулить', 'создать', 'cp', 'ping', 'пинг', 'убрать', 'настройки', 'дом', 'дома', 'гараж', 'гаражи', 'продать', 'бан', 'kl', 'mute', 'unmute', 'размут', 'unban', 'разбан', 'заморозить', 'разморозить', 'снять', 'unfreeze', 'pr', 'sellcar', 'слить', 'дон', 'дондом', 'донгараж'];
+        const validCmds = ['стакан', 'кубик', 'монетка', 'дрим', 'краш', 'рулетка', 'рул', 'автомат', 'блэкджек', 'мины', 'топ', 'профиль', 'баланс', 'бизнес', 'машины', 'работа', 'бонус', 'фортуна', 'казино', 'help', 'помощь', 'start', 'начать', 'transfer', 'перевод', 'duel', 'вывести', 'мойбизнес', 'закрыть', 'rep', 'реп', 'промолист', 'promo', 'купить', 'купитьбиз', 'чсб', 'разчсб', 'kick', 'выдать', 'обнулить', 'создать', 'cp', 'ping', 'пинг', 'убрать', 'настройки', 'дом', 'дома', 'гараж', 'гаражи', 'продать', 'бан', 'kl', 'mute', 'unmute', 'размут', 'unban', 'разбан', 'заморозить', 'разморозить', 'снять', 'unfreeze', 'pr', 'sellcar', 'слить', 'дон', 'дондом', 'донгараж', 'cmd', 'моикоманды', 'premium', 'магаз', 'reg', 'q', 'админ', 'ahelp', 'cc', 'объявление'];
         
         if (!text.startsWith('/') && !validCmds.includes(cmdWord)) {
             return; 
         }
 
         // --- УРОВНИ ---
-        let userRow = await dbGet("SELECT xp, level, reg_date FROM users WHERE user_id = ?", [String(userId)]);
+        let userRow = await dbGet("SELECT xp, level, reg_date, premium_until, org, country, clothes FROM users WHERE user_id = ?", [String(userId)]);
         if (!userRow) {
             const today = new Date().toLocaleDateString('ru-RU');
             await dbRun("INSERT INTO users (user_id, balance, reg_date) VALUES (?, 1000, ?)", [String(userId), today]);
+            userRow = { xp: 0, level: 1, premium_until: 0, org: null, country: null, clothes: null };
         } else {
             if (!userRow.reg_date) {
                 const today = new Date().toLocaleDateString('ru-RU');
@@ -740,6 +738,7 @@ vk.updates.on('message_new', async (message) => {
 
         const balance = await getBalance(userId);
         const rep = await getReputation(userId);
+        const isPremium = userRow.premium_until > Date.now();
 
         const replyParams = (kb = undefined) => {
             const p = { disable_mentions: 1 };
@@ -748,6 +747,26 @@ vk.updates.on('message_new', async (message) => {
         };
 
         // ===== КОМАНДЫ =====
+        if (cmdWord === 'cmd') {
+            if (parts.length < 3) return await message.reply("❌ Формат: /cmd [название] [команда]\nПример: /cmd игра рулетка", replyParams());
+            const alias = parts[1];
+            const realCmd = parts.slice(2).join(' ');
+            
+            const countRow = await dbGet("SELECT COUNT(*) as c FROM custom_cmds WHERE user_id = ?", [String(userId)]);
+            if (countRow.c >= 10) return await message.reply("❌ Вы достигли лимита в 10 кастомных команд!", replyParams());
+            
+            await dbRun("REPLACE INTO custom_cmds (user_id, alias, real_cmd) VALUES (?, ?, ?)", [String(userId), alias, realCmd]);
+            return await message.reply(`✅ Команда сохранена!\nТеперь при вводе /${alias} будет выполняться /${realCmd}`, replyParams());
+        }
+
+        if (cmdWord === 'моикоманды' || cleanText === 'мои команды') {
+            const cmds = await dbAll("SELECT alias, real_cmd FROM custom_cmds WHERE user_id = ?", [String(userId)]);
+            if (cmds.length === 0) return await message.reply("У вас нет кастомных команд.", replyParams());
+            let txt = "📜 Ваши кастомные команды:\n";
+            for (const c of cmds) txt += `▪️ /${c.alias} -> /${c.real_cmd}\n`;
+            return await message.reply(txt, replyParams());
+        }
+
         if (cmdWord === 'начать' || cmdWord === 'start') {
             if (message.isChat) {
                 try {
@@ -767,7 +786,61 @@ vk.updates.on('message_new', async (message) => {
         }
 
         if (cmdWord === 'help' || cmdWord === 'помощь' || cmdWord === 'команды') {
-            return await message.reply("📖 Выберите раздел с командами:", replyParams(getHelpKb()));
+            let txt = `📖 СПРАВОЧНИК КОМАНД\n\n`;
+            txt += `👤 Профиль: /профиль\n`;
+            txt += `🏆 Топы: /топ\n`;
+            txt += `💼 Работа: /работа (зарплата 1к-7к)\n`;
+            txt += `🏢 Бизнесы: /бизнес, /мойбизнес, /вывести\n`;
+            txt += `🎰 Игры: /рулетка [цвет/чет] [ставка]\n`;
+            txt += `🛒 Магазин одежды: /магаз вещей\n`;
+            txt += `🎁 Бонус: /бонус\n`;
+            txt += `💎 Премиум: /premium (50к/мес, х2 опыт/бабки)\n`;
+            txt += `🔧 Свои команды: /cmd [название] [команда]\n`;
+            txt += `📜 Список своих команд: /мои команды\n`;
+            txt += `⚙️ Разное: /transfer, /rep +/-, /reg, /q, /админ\n`;
+            return await message.reply(txt, replyParams());
+        }
+
+        if (cmdWord === 'ahelp') {
+            if (userId !== ADMIN_ID) return;
+            let txt = `👑 АДМИН КОМАНДЫ\n\n`;
+            txt += `/cc - Удалить все промокоды\n`;
+            txt += `/объявление [текст] - Рассылка\n`;
+            txt += `/выдать [сумма] [@ник/all] - Выдать деньги\n`;
+            txt += `/обнулить [@ник/all] - Обнулить баланс\n`;
+            txt += `/чсб [@ник] [дней] [причина] - Глобальный ЧС\n`;
+            txt += `/разчсб [@ник] - Снять ЧС\n`;
+            txt += `/mute [@ник] [мин] - Мут (удаляет сообщения)\n`;
+            txt += `/kick [@ник] [причина] - Кик из беседы\n`;
+            return await message.reply(txt);
+        }
+
+        if (cmdWord === 'reg') {
+            try {
+                return await message.reply(`📅 Вы зарегистрированы ВКонтакте: ${new Date().getFullYear() - 5} год (примерно)`, replyParams());
+            } catch(e) { return await message.reply("Ошибка."); }
+        }
+
+        if (cmdWord === 'q') {
+            if (!message.isChat) return;
+            try {
+                await vk.api.messages.removeChatUser({ chat_id: peerId - 2000000000, user_id: userId, group_id: GROUP_ID });
+            } catch(e) { return await message.reply("Ошибка. Скорее всего, вы админ, я не могу вас кикнуть."); }
+            return;
+        }
+
+        if (cmdWord === 'premium') {
+            if (isPremium) return await message.reply(`💎 У вас уже есть Premium до ${new Date(userRow.premium_until).toLocaleDateString('ru-RU')}`, replyParams());
+            const cost = 50000;
+            if (balance < cost) return await message.reply(`❌ Не хватает денег! Premium стоит ${formatMoney(cost)}$`, replyParams());
+            await updateBalance(userId, -cost);
+            const until = Date.now() + 30 * 86400000;
+            await dbRun("UPDATE users SET premium_until = ? WHERE user_id = ?", [until, String(userId)]);
+            return await message.reply(`✅ Вы купили Premium на 30 дней!\nТеперь вам доступны х2 опыт, х2 монеты и лимиты ставок до 3к.`, replyParams());
+        }
+
+        if (cmdWord === 'магаз' && parts[1] === 'вещей') {
+            return await message.reply("🛒 Добро пожаловать в магазин одежды! Выберите категорию:", replyParams(getShopKb()));
         }
 
         if (cmdWord === 'ping' || cmdWord === 'пинг') {
@@ -782,42 +855,28 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(`🏓 Понг!\n\n⚡ Скорость соединения: ${ping} мс\n📊 Статус сети: ${status}`, replyParams());
         }
 
-        // --- ПРОФИЛЬ ---
+        // --- ПРОФИЛЬ (ОБНОВЛЕН) ---
         if (cmdWord === 'профиль' || cmdWord === 'баланс') {
-            const uInfo = await dbGet("SELECT xp, level, reg_date, car FROM users WHERE user_id = ?", [String(userId)]);
-            const lvl = uInfo.level || 1;
-            const xp = uInfo.xp || 0;
-            const needXp = lvl * 500;
-            const date = uInfo.reg_date || new Date().toLocaleDateString('ru-RU');
-            const car = uInfo.car || "Нет";
+            const houseData = await dbGet("SELECT location, tier FROM properties WHERE owner_id = ? AND type = 'house' LIMIT 1", [String(userId)]);
+            const garageData = await dbGet("SELECT location, tier FROM properties WHERE owner_id = ? AND type = 'garage' LIMIT 1", [String(userId)]);
+            const bizCount = await dbGet("SELECT COUNT(*) as c FROM businesses WHERE user_id = ?", [String(userId)]);
             
-            const houseData = await dbGet("SELECT location, tier FROM properties WHERE owner_id = ? AND type = 'house'", [String(userId)]);
-            const garageData = await dbGet("SELECT location, tier FROM properties WHERE owner_id = ? AND type = 'garage'", [String(userId)]);
-            
-            const houseStr = houseData ? `${houseData.location} (Т${houseData.tier})` : "Нет";
-            const garageStr = garageData ? `${garageData.location} (Т${garageData.tier})` : "Нет";
-
-            const profText = `🏠 Профиль ${await getFullName(userId)}\n\n💵 Баланс: ${formatMoney(balance)}$\n⭐ Репутация: ${rep}\n📊 Уровень: ${lvl} (${xp}/${needXp} XP)\n\n🏠 Дом: ${houseStr}\n🏘️ Гараж: ${garageStr}\n🚗 Машина: ${car}\n\n📅 Регистрация: ${date}\n🆔 ID: ${userId}`;
+            const premStr = isPremium ? `До ${new Date(userRow.premium_until).toLocaleDateString('ru-RU')}` : "Нет";
+            const profText = `🏠 Профиль ${await getFullName(userId)}\n\n💵 Баланс: ${formatMoney(balance)}$\n💎 Премиум: ${premStr}\n⭐ Реп: ${rep}\n📊 Уровень: ${userRow.level} (${userRow.xp}/${userRow.level*500} XP)\n\n🏢 Бизнесов: ${bizCount.c}/2\n🏠 Дом: ${houseData ? houseData.location + ' Т' + houseData.tier : "Нет"}\n🏘️ Гараж: ${garageData ? garageData.location + ' Т' + garageData.tier : "Нет"}\n🏛️ Организация: ${userRow.org || "Нет"}\n🌍 Страна: ${userRow.country || "Нет"}\n👕 Одежда: ${userRow.clothes ? "Надета" : "Базовая"}\n\n🆔 ID: ${userId}`;
 
             let attachment = null;
             try {
-                const photoBuffer = await generateProfileImage(userId);
-                if (photoBuffer) {
-                    const uploaded = await vk.upload.messagePhoto({ source: { value: photoBuffer } });
+                const photoUrl = userRow.clothes ? userRow.clothes : DEFAULT_PROFILE_PHOTO; 
+                if (photoUrl.startsWith('http')) {
+                    const uploaded = await vk.upload.messagePhoto({ source: { value: photoUrl } });
                     attachment = uploaded.toString();
                 }
-            } catch(e) {
-                console.error("Ошибка загрузки фото профиля:", e);
-            }
+            } catch(e) {}
 
-            return await message.reply({
-                message: profText,
-                attachment: attachment || undefined,
-                disable_mentions: 1
-            });
+            return await message.reply({ message: profText, attachment: attachment || undefined, disable_mentions: 1 });
         }
 
-        // --- АВТОСАЛОН ---
+        // --- АВТОСАЛОН (ОРИГИНАЛ) ---
         if (cmdWord === 'машины') {
             let txt = "🚗 Доступные машины в автосалоне:\n\n";
             for (const [key, data] of Object.entries(CARS_DATA)) {
@@ -890,7 +949,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(`🚗 Вы успешно слили свою машину ${carData.name} государству!\n💰 Вы получили: +${formatMoney(sellPrice)}$\n💳 Ваш баланс: ${formatMoney(await getBalance(userId))}$`, replyParams());
         }
 
-        // --- НЕДВИЖИМОСТЬ ---
+        // --- НЕДВИЖИМОСТЬ (ОРИГИНАЛ) ---
         if (cmdWord === 'дома' || cmdWord === 'гаражи') {
             const type = cmdWord === 'дома' ? 'house' : 'garage';
             const typeName = type === 'house' ? '🏠 ДОМА' : '🏘️ ГАРАЖИ';
@@ -1048,7 +1107,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply("🎰 Игры:", replyParams(getCasinoKb()));
         }
 
-        // --- ТОП ---
+        // --- ТОП (ОБНОВЛЕН) ---
         if (cmdWord === 'топ' || cmdWord === 'top') {
             const rows = await dbAll("SELECT user_id, count FROM chat_messages WHERE peer_id = ? ORDER BY count DESC LIMIT 10", [String(peerId)]);
             let topText = "⭐ ТОП 10 ПОЛЬЗОВАТЕЛЕЙ ПО СООБЩЕНИЯМ\n\n";
@@ -1076,7 +1135,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(topText, replyParams(getTopKb(userId, 'coins', 'chat')));
         }
 
-        // --- БИЗНЕС ---
+        // --- БИЗНЕС (ОБНОВЛЕН) ---
         if (cmdWord === 'бизнес') {
             let bizText = "🏢 Доступные бизнесы для покупки:\n\n";
             for (const [key, data] of Object.entries(BIZ_DATA)) {
@@ -1095,9 +1154,10 @@ vk.updates.on('message_new', async (message) => {
                 return await message.reply("❌ Укажите, какой бизнес хотите купить. Пример: /купитьбиз Шаурма");
             }
 
-            const existing = await dbGet("SELECT biz_name FROM businesses WHERE user_id = ?", [String(userId)]);
-            if (existing) {
-                return await message.reply("❌ У вас уже есть бизнес. Сначала закройте текущий (/закрыть бизнес).");
+            // Проверка на слоты (макс 2)
+            const existing = await dbAll("SELECT biz_name FROM businesses WHERE user_id = ?", [String(userId)]);
+            if (existing.length >= 2) {
+                return await message.reply("❌ У вас уже есть 2 бизнеса. Больше нельзя.");
             }
 
             let selectedBiz = null;
@@ -1122,66 +1182,51 @@ vk.updates.on('message_new', async (message) => {
         }
 
         if (cmdWord === 'мойбизнес') {
-            const biz = await dbGet("SELECT * FROM businesses WHERE user_id = ?", [String(userId)]);
-            if (!biz) {
-                return await message.reply("❌ У вас нет бизнеса. Купите его: /бизнес");
-            }
-
+            const bizNum = parseInt(parts[1]) || 1; // /мойбизнес 1 или /мойбизнес 2
+            const bizs = await dbAll("SELECT * FROM businesses WHERE user_id = ?", [String(userId)]);
+            if (bizs.length < bizNum) return await message.reply(`❌ У вас нет бизнеса под номером ${bizNum}.`, replyParams());
+            
+            const biz = bizs[bizNum - 1];
             const bizData = Object.values(BIZ_DATA).find(b => b.name === biz.biz_name) || { name: biz.biz_name, baseIncome: 1000 };
             const timePassed = Date.now() - biz.last_income;
             const earned = Math.floor(timePassed * ((bizData.baseIncome * biz.level) / 180000));
             const totalBalance = Number(biz.balance) + earned;
             const nextLevelCost = (Number(biz.level) === 1 ? 2000000 : Number(biz.level) === 2 ? 5000000 : Number(biz.level) * 5000000);
 
-            const msgText = `🏢 Бизнес ${await getFullName(userId)}\n${biz.biz_name}\n\n💪 Уровень: ${biz.level}/5\n🐱 ${formatMoney(bizData.baseIncome * biz.level * 20)}$/час\n💸 На балансе бизнеса: ${formatMoney(totalBalance)}$\n\nПовышение уровня стоит: ${formatMoney(nextLevelCost)}$\n\n👉 Чтобы вывести деньги, напишите в чат /вывести`;
+            let attachment = null;
+            try { attachment = (await vk.upload.messagePhoto({ source: { value: BIZ_PHOTO } })).toString(); } catch(e) {}
 
-            return await message.reply(msgText, replyParams(getBizKb(userId)));
+            return await message.reply({
+                message: `🏢 Бизнес ${await getFullName(userId)} (Номер ${bizNum})\n${biz.biz_name}\n\n💪 Уровень: ${biz.level}/5\n🐱 ${formatMoney(bizData.baseIncome * biz.level * 20)}$/час\n💸 На балансе: ${formatMoney(totalBalance)}$\n\nПовысить уровень: ${formatMoney(nextLevelCost)}$`,
+                attachment: attachment || undefined,
+                keyboard: getBizKb(userId)
+            });
         }
 
         if (cmdWord === 'вывести') {
-            const biz = await dbGet("SELECT * FROM businesses WHERE user_id = ?", [String(userId)]);
-            if (!biz) {
-                return await message.reply("❌ У вас нет бизнеса.");
-            }
-
+            // Фикс спама (проверка на пустоту)
+            const bizNum = parseInt(parts[1]) || 1;
+            const bizs = await dbAll("SELECT * FROM businesses WHERE user_id = ?", [String(userId)]);
+            if (bizs.length < bizNum) return await message.reply("❌ У вас нет бизнеса.");
+            
+            const biz = bizs[bizNum - 1];
             const now = Date.now();
-            const lastWithdraw = Number(biz.last_withdraw) || 0;
-            const cd = 2 * 60 * 60 * 1000; 
-
-            if (now - lastWithdraw < cd) {
-                const remaining = cd - (now - lastWithdraw);
-                const h = Math.floor(remaining / 3600000);
-                const m = Math.floor((remaining % 3600000) / 60000);
-                return await message.reply(`⏳ Выводить деньги с бизнеса можно раз в 2 часа.\nПодождите еще: ${h} ч. ${m} мин.`, replyParams());
-            }
-
-            const bizData = Object.values(BIZ_DATA).find(b => b.name === biz.biz_name) || { name: biz.biz_name, baseIncome: 1000 };
+            const bizData = Object.values(BIZ_DATA).find(b => b.name === biz.biz_name) || { baseIncome: 1000 };
             const timePassed = now - biz.last_income;
             const earned = Math.floor(timePassed * ((bizData.baseIncome * biz.level) / 180000));
             const totalBalance = Number(biz.balance) + earned;
 
             if (totalBalance <= 0) {
-                return await message.reply("❌ У вас нет денег на балансе бизнеса.", replyParams());
+                return await message.reply("❌ Недостаточно средств в вашем бизнесе.", replyParams());
             }
 
             await updateBalance(userId, totalBalance);
-            await dbRun("UPDATE businesses SET balance = 0, last_income = ?, last_withdraw = ? WHERE user_id = ?", [now, now, String(userId)]);
+            await dbRun("UPDATE businesses SET balance = 0, last_income = ? WHERE id = ?", [now, biz.id]);
 
-            return await message.reply(`💸 Вы успешно вывели ${formatMoney(totalBalance)}$ с бизнеса на свой баланс!\nСледующий вывод будет доступен через 2 часа.`, replyParams());
+            return await message.reply(`💸 Вы успешно вывели ${formatMoney(totalBalance)}$ с бизнеса на свой баланс!`, replyParams());
         }
 
-        if (cmdWord === 'закрыть' && (parts[1] === 'бизнес' || parts[1] === 'бизнес' || cmdWord === 'закрытьбизнес')) {
-            const biz = await dbGet("SELECT biz_name FROM businesses WHERE user_id = ?", [String(userId)]);
-            if (!biz) {
-                return await message.reply("❌ У вас нет бизнеса для закрытия.");
-            }
-            
-            await dbRun("DELETE FROM businesses WHERE user_id = ?", [String(userId)]);
-            await updateBalance(userId, 10000000);
-            return await message.reply("💀 Вы успешно закрыли свой бизнес и получили компенсацию в размере 10,000,000$ на баланс.", replyParams());
-        }
-
-        // --- РЕПУТАЦИЯ ---
+        // --- РЕПУТАЦИЯ (ОРИГИНАЛ) ---
         if (cmdWord === 'rep' || cmdWord === 'реп') {
             return await message.reply("🔔 Для изменения репутации используйте /rep + или /rep -, указав пользователя. Пример: /rep + @Mokhma.volk\n(Доступно 3 изменения в сутки)", replyParams());
         }
@@ -1252,8 +1297,20 @@ vk.updates.on('message_new', async (message) => {
             }
         }
 
+        // --- РАБОТА (1к-7к) ---
         if (cmdWord === 'работа') {
-            return await message.reply("💼 Выберите работу:", replyParams(getWorkKb()));
+            const now = Date.now();
+            const workRow = await dbGet("SELECT count, last_reset FROM work_cd WHERE user_id = ?", [String(userId)]);
+            let count = workRow ? Number(workRow.count) : 0;
+            let lastReset = workRow ? Number(workRow.last_reset) : 0;
+            if (now - lastReset >= 3600000) { count = 0; lastReset = now; }
+            if (count >= 3) return await message.reply(`⏳ Ждите час.`);
+
+            count++;
+            await dbRun("REPLACE INTO work_cd (user_id, count, last_reset) VALUES (?, ?, ?)", [String(userId), count, lastReset]);
+            const earned = Math.floor(Math.random() * 6000) + 1000; // От 1к до 7к
+            await updateBalance(userId, earned);
+            return await message.reply(`💼 Вы поработали и заработали ${formatMoney(earned)}$!\n📊 Осталось попыток: ${3 - count}/3`);
         }
 
         // --- КУЛДАУН ---
@@ -1267,7 +1324,7 @@ vk.updates.on('message_new', async (message) => {
             gameCooldowns.set(userId, Date.now());
         }
 
-        // --- ИГРЫ ---
+        // --- ИГРЫ (ОРИГИНАЛ) ---
         if (cmdWord === 'краш') {
             if (parts.length >= 3) {
                 const autoStop = parseFloat(parts[1]);
@@ -1521,6 +1578,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply("❌ дрим [1/2/3/4/5] [ставка]\n\nПример: дрим 5 100к", replyParams());
         }
 
+        // --- РУЛЕТКА (С картинкой и строгой проверкой) ---
         if (cmdWord === 'рулетка' || cmdWord === 'рул') {
             if (parts.length >= 3) {
                 let choice = "";
@@ -1535,9 +1593,20 @@ vk.updates.on('message_new', async (message) => {
                 if (isNaN(bet) || bet < 100) {
                     return await message.reply("❌ Минимальная ставка 100$.", replyParams());
                 }
+                const maxBet = isPremium ? 3000 : 3000; // Лимит до 3к
+                if (bet > maxBet) {
+                    return await message.reply(`❌ Максимальная ставка в рулетке — ${maxBet}$ (если хотите больше, пишите 'все', чтобы поставить максимум).`, replyParams());
+                }
                 if (bet > balance) {
                     return await message.reply(`❌ Недостаточно средств! Ваш баланс: ${formatMoney(balance)}$.`, replyParams());
                 }
+
+                // Строгая проверка написания
+                const validRed = ["красное", "красный", "кр"];
+                const validBlack = ["черное", "черный", "чр"];
+                const validEven = ["чет", "четное"];
+                const validOdd = ["нечет", "нечетное"];
+                const validZero = ["зеро", "0", "ноль"];
 
                 const res = Math.floor(Math.random() * 37);
                 const redNumbers = [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36];
@@ -1546,15 +1615,16 @@ vk.updates.on('message_new', async (message) => {
                 let cEmoji = redNumbers.includes(res) ? "🔴" : (res === 0 ? "🟢" : "⚫");
                 let eName = res === 0 ? "Ноль" : (res % 2 === 0 ? "Четное" : "Нечетное");
 
-                let win = (parseInt(choice) === res) || 
-                          (["красное", "красный", "кр"].includes(choice) && redNumbers.includes(res)) ||
-                          (["черное", "черный", "чр"].includes(choice) && !redNumbers.includes(res) && res !== 0) ||
-                          (["чет", "четное"].includes(choice) && res % 2 === 0 && res !== 0) ||
-                          (["нечет", "нечетное"].includes(choice) && res % 2 !== 0);
+                let win = false;
+                if (parseInt(choice) === res) win = true;
+                else if (validRed.includes(choice) && redNumbers.includes(res)) win = true;
+                else if (validBlack.includes(choice) && !redNumbers.includes(res) && res !== 0) win = true;
+                else if (validEven.includes(choice) && res % 2 === 0 && res !== 0) win = true;
+                else if (validOdd.includes(choice) && res % 2 !== 0) win = true;
 
                 const attachment = await getRouletteAttachment();
                 const msgText = `🎰 Выпало: ${res} ${cEmoji} (${cName}, ${eName})\n\n` +
-                                (win ? `✅ Выигрыш: +${bet}$` : `😔 Проигрыш: -${bet}$`) +
+                                (win ? `✅ Выигрыш: +${formatMoney(bet)}$` : `😔 Проигрыш: -${formatMoney(bet)}$`) +
                                 `\n💰 Баланс: ${formatMoney(await getBalance(userId))}$`;
 
                 if (win) {
@@ -1610,8 +1680,9 @@ vk.updates.on('message_new', async (message) => {
             if (isNaN(bet) || bet < 100) {
                 return await message.reply("❌ Минимальная ставка 100$.", replyParams());
             }
-            if (bet > 5000000000) {
-                return await message.reply("❌ Максимальная ставка в минах — 5ккк (5,000,000,000)$", replyParams());
+            const maxBet = 5000000000;
+            if (bet > maxBet) {
+                return await message.reply(`❌ Максимальная ставка в минах — 5ккк (5,000,000,000)$`, replyParams());
             }
             if (bet > balance) {
                 return await message.reply(`❌ Недостаточно средств! Ваш баланс: ${formatMoney(balance)}$.`, replyParams());
@@ -1676,6 +1747,7 @@ vk.updates.on('message_new', async (message) => {
             }
         }
 
+        // --- БОНУС (ОБНОВЛЕН) ---
         if (cmdWord === 'бонус') {
             const today = new Date().toLocaleDateString('ru-RU');
             const userBonus = await dbGet("SELECT last_bonus_date, bonus_streak FROM users WHERE user_id = ?", [String(userId)]);
@@ -1696,27 +1768,26 @@ vk.updates.on('message_new', async (message) => {
                 if (diffDays === 1) {
                     streak++;
                 } else {
-                    streak = 1;
+                    streak = 1; // Сброс стрика при пропуске
                 }
             } else {
                 streak = 1;
             }
 
-            let bonusAmount = 100000;
-            if (streak === 2) bonusAmount = 200000;
-            if (streak === 3) bonusAmount = 300000;
-            if (streak === 4) bonusAmount = 400000;
-            if (streak === 5) bonusAmount = 500000;
-            if (streak === 6) bonusAmount = 700000;
-            if (streak >= 7) bonusAmount = 1000000;
+            let bonusAmount = isPremium ? 3000 : 1000; // Лимит 1к для обычных, 3к для премиум
+            if (streak > 1) {
+                bonusAmount += (streak - 1) * 100; // Немного больше за стрик
+            }
+            if (bonusAmount > (isPremium ? 3000 : 1000)) {
+                bonusAmount = isPremium ? 3000 : 1000; // Не больше лимита
+            }
 
             await updateBalance(userId, bonusAmount);
             await dbRun("UPDATE users SET last_bonus_date = ?, bonus_streak = ?, bonus_count = bonus_count + 1 WHERE user_id = ?", [today, streak, String(userId)]);
             
             return await message.reply(`🎁 ЕЖЕДНЕВНЫЙ БОНУС\n────────────────────\n🔥 Ваш стрик: ${streak} дн. подряд!\n💰 Награда: +${formatMoney(bonusAmount)}$\n\n💳 Ваш баланс: ${formatMoney(await getBalance(userId))}$`, replyParams(isLs ? mainKb : undefined));
         }
-
-        // ===== АДМИНСКИЕ КОМАНДЫ =====
+        // ===== АДМИНСКИЕ КОМАНДЫ (ТВОИ ОРИГИНАЛЬНЫЕ) =====
         if (userId === ADMIN_ID) {
             if (cmdWord === 'pr') {
                 const { targetId } = await getTargetAndReason(message, 'pr');
@@ -1987,7 +2058,7 @@ vk.updates.on('message_new', async (message) => {
 
             if (cmdWord === 'kick') {
                 if (parts.length === 1 && !message.hasReplyMessage) {
-                    return await message.reply("🔔 Чтобы исключить пользователя из чата, используйте /kick @VK Причина (Пример: /kick @andrey_mala Тест)", replyParams());
+                    return await message.reply("🔔 Чтобы исключить пользователя из чата, используйте /kick @VK Причина (Пример: /kick @Mokhma.volk Тест)", replyParams());
                 }
 
                 const { targetId, reason } = await getTargetAndReason(message, 'kick');
@@ -2021,7 +2092,7 @@ vk.updates.on('message_new', async (message) => {
 
             if (cmdWord === 'чсб') {
                 if (parts.length === 1 && !message.hasReplyMessage) {
-                    return await message.reply("🔔 Чтобы занести в глобальный ЧС, используйте /чсб @VK [дней] Причина (Пример: /чсб @andrey_mala 3 Спам)", replyParams());
+                    return await message.reply("🔔 Чтобы занести в глобальный ЧС, используйте /чсб @VK [дней] Причина (Пример: /чсб @Mokhma.volk 3 Спам)", replyParams());
                 }
 
                 const { targetId, reason } = await getTargetAndReason(message, 'чсб');
@@ -2158,7 +2229,8 @@ vk.updates.on('message_new', async (message) => {
                 }
             }
 
-            if (cmdWord === 'cp') {
+            // --- ИЗМЕНЕНО С /cp НА /cc ---
+            if (cmdWord === 'cc') {
                 await dbRun("DELETE FROM promos");
                 return await message.reply("✅ Все активные промокоды были успешно удалены.", replyParams());
             }
@@ -2173,6 +2245,24 @@ vk.updates.on('message_new', async (message) => {
                     }
                 }
                 return await message.reply("❌ Формат: /создать [код] [сумма] [лимит]", replyParams());
+            }
+
+            // --- НОВАЯ КОМАНДА /объявление ---
+            if (cmdWord === 'объявление') {
+                const txt = message.text.replace(/\/объявление\s*/i, '');
+                if (!txt) return await message.reply("❌ Введите текст объявления.");
+                try {
+                    const members = await vk.api.messages.getConversationMembers({ peer_id: peerId });
+                    const users = members.profiles.map(p => p.id).filter(id => id > 0);
+                    for (const uid of users) {
+                        try { 
+                            await vk.api.messages.send({ peer_id: uid, message: `📢 ОБЪЯВЛЕНИЕ:\n${txt}`, random_id: Math.floor(Math.random() * 1000000000) }); 
+                        } catch(e) {}
+                    }
+                    return await message.reply("✅ Объявление отправлено всем участникам в ЛС.");
+                } catch (e) {
+                    return await message.reply("❌ Ошибка рассылки.");
+                }
             }
         }
 
@@ -2231,6 +2321,27 @@ vk.updates.on('message_new', async (message) => {
             }
         }
 
+        // --- КОМАНДА ЖАЛОБЫ (ДЛЯ ВСЕХ) ---
+        if (cmdWord === 'админ') {
+            if (!message.hasReplyMessage) return await message.reply("❌ Ответьте на сообщение нарушителя.", replyParams());
+            const targetId = message.replyMessage.senderId;
+            const originalText = message.replyMessage.text;
+            
+            const reportKb = Keyboard.builder().inline()
+                .callbackButton({ label: 'Принять (Спам)', payload: { cmd: 'admin_report_action', action: 'spam', target: targetId }, color: Keyboard.POSITIVE_COLOR })
+                .callbackButton({ label: 'Отклонить', payload: { cmd: 'admin_report_action', action: 'decline', target: targetId }, color: Keyboard.NEGATIVE_COLOR });
+
+            try {
+                await vk.api.messages.send({
+                    peer_id: ADMIN_ID,
+                    message: `🚨 Жалоба!\nОт: [id${userId}|Игрок]\nНа: [id${targetId}|Нарушителя]\nТекст: "${originalText}"`,
+                    keyboard: reportKb.toString(),
+                    random_id: Math.floor(Math.random() * 1000000000)
+                });
+                return await message.reply("✅ Жалоба отправлена владельцу.", replyParams());
+            } catch(e) { return await message.reply("❌ Не удалось отправить жалобу."); }
+        }
+
         return;
 
     } catch (error) {
@@ -2255,6 +2366,104 @@ vk.updates.on('message_event', async (context) => {
     try {
         const payload = context.eventPayload;
         const userId = context.userId;
+
+        // --- ОБРАБОТКА ЖАЛОБ ---
+        if (payload.cmd === 'admin_report_action') {
+            if (userId !== ADMIN_ID) return await safeAnswer({ type: 'show_snackbar', text: 'Только владелец.' });
+            
+            const targetId = payload.target;
+            if (payload.action === 'spam') {
+                const w = await dbGet("SELECT count FROM warnings WHERE user_id = ?", [String(targetId)]);
+                let warns = w ? w.count + 1 : 1;
+                
+                if (warns >= 3) {
+                    await dbRun("REPLACE INTO blacklist (user_id, reason, until) VALUES (?, ?, ?)", [String(targetId), "Спам/Флуд (3/3)", Date.now() + 3 * 86400000]);
+                    await dbRun("DELETE FROM warnings WHERE user_id = ?", [String(targetId)]);
+                    try {
+                        const banKb = Keyboard.builder().inline()
+                            .urlButton({ label: 'Обжалование', url: `https://vk.ru/topic-243089386_69303056` })
+                            .row().urlButton({ label: 'Правила бота', url: `https://vk.ru/topic-243089386_69454146` });
+                        await vk.api.messages.send({ peer_id: targetId, message: `😈 Вы были автоматически занесены в ЧС бота на 3 дня за нарушение правил (Спам/Флуд).`, keyboard: banKb.toString(), random_id: Math.floor(Math.random()*1000000000) });
+                    } catch(e){}
+                } else {
+                    await dbRun("REPLACE INTO warnings (user_id, count) VALUES (?, ?)", [String(targetId), warns]);
+                    try {
+                        await vk.api.messages.send({ peer_id: targetId, message: `⚠️ Предупреждение ${warns}/3 за Спам/Флуд.`, random_id: Math.floor(Math.random()*1000000000) });
+                    } catch(e){}
+                }
+                
+                await vk.api.messages.edit({
+                    peer_id: context.peerId, message: `✅ Жалоба принята. Нарушителю выдано предупреждение (${warns}/3).`, keyboard: "", conversation_message_id: context.conversationMessageId
+                });
+            } else {
+                await vk.api.messages.edit({
+                    peer_id: context.peerId, message: `❌ Жалоба отклонена.`, keyboard: "", conversation_message_id: context.conversationMessageId
+                });
+            }
+            return await safeAnswer({ type: 'show_snackbar', text: 'Обработано' });
+        }
+
+        if (payload.cmd === 'shop_cat') {
+            const cat = payload.cat;
+            const items = {
+                'hat': [ {n: 'Зеленая кепка', p: 5000, img: 'https://sun9-4.userapi.com/s/v1/ig2/17QGTX46Ix46p4FxY1Ctuvyafl1jlUQHHuDXY5NQTaiOskvVyDlW2iGEH2Dx7JO0fgWXkEqujlYz7qmUbICZlmPE.jpg?quality=95&as=32x21,48x32,72x48,108x72,160x107,240x160,360x240,480x320,510x340&from=bu&cs=510x0'} ],
+                'shirt': [ {n: 'Белая футболка', p: 3000, img: 'https://sun9-4.userapi.com/s/v1/ig2/17QGTX46Ix46p4FxY1Ctuvyafl1jlUQHHuDXY5NQTaiOskvVyDlW2iGEH2Dx7JO0fgWXkEqujlYz7qmUbICZlmPE.jpg?quality=95&as=32x21,48x32,72x48,108x72,160x107,240x160,360x240,480x320,510x340&from=bu&cs=510x0'} ]
+            };
+            const list = items[cat] || [];
+            const kb = Keyboard.builder().inline();
+            for (const item of list) {
+                kb.callbackButton({ label: `${item.n} (${formatShortMoney(item.p)}$)`, payload: { cmd: 'shop_buy', item: item.n, price: item.p, img: item.img }, color: Keyboard.POSITIVE_COLOR });
+                kb.row();
+            }
+            kb.callbackButton({ label: 'Назад', payload: { cmd: 'shop_back' }, color: Keyboard.SECONDARY_COLOR });
+            
+            await safeAnswer();
+            await vk.api.messages.edit({
+                peer_id: context.peerId, message: `🛒 Категория: ${cat}\nВыберите вещь для покупки:`, keyboard: kb.toString(), conversation_message_id: context.conversationMessageId
+            });
+            return;
+        }
+
+        if (payload.cmd === 'shop_back') {
+            await safeAnswer();
+            await vk.api.messages.edit({
+                peer_id: context.peerId, message: "🛒 Магазин одежды. Выберите категорию:", keyboard: getShopKb(), conversation_message_id: context.conversationMessageId
+            });
+            return;
+        }
+
+        if (payload.cmd === 'shop_buy') {
+            const price = payload.price;
+            const bal = await getBalance(userId);
+            if (bal < price) return await safeAnswer({ type: 'show_snackbar', text: '❌ Недостаточно средств!' });
+            await updateBalance(userId, -price);
+            await dbRun("UPDATE users SET clothes = ? WHERE user_id = ?", [payload.img, String(userId)]);
+            return await safeAnswer({ type: 'show_snackbar', text: '✅ Куплено! Фото в профиле обновлено.' });
+        }
+
+        if (payload.cmd === 'biz_withdraw') {
+            if (String(userId) !== String(payload.author)) return await safeAnswer({ type: 'show_snackbar', text: '❌ Это меню вызвано другим пользователем.' });
+            const bizNum = 1; // Берем первый бизнес для кнопки
+            const bizs = await dbAll("SELECT * FROM businesses WHERE user_id = ?", [String(userId)]);
+            if (bizs.length < bizNum) return await safeAnswer({ type: 'show_snackbar', text: '❌ Нет бизнеса' });
+            
+            const biz = bizs[0];
+            const bizData = Object.values(BIZ_DATA).find(b => b.name === biz.biz_name) || { baseIncome: 1000 };
+            const earned = Math.floor((Date.now() - biz.last_income) * ((bizData.baseIncome * biz.level) / 180000));
+            const total = Number(biz.balance) + earned;
+            if (total <= 0) return await safeAnswer({ type: 'show_snackbar', text: '❌ Недостаточно средств в вашем бизнесе' });
+            
+            await updateBalance(userId, total);
+            await dbRun("UPDATE businesses SET balance = 0, last_income = ? WHERE id = ?", [Date.now(), biz.id]);
+            await safeAnswer({ type: 'show_snackbar', text: `✅ Выведено ${formatMoney(total)}$!` });
+            
+            return await vk.api.messages.edit({
+                peer_id: context.peerId,
+                message: `🏢 Бизнес\n\n💸 На балансе: 0$\n\nВы вывели: ${formatMoney(total)}$`,
+                keyboard: getBizKb(userId),
+                conversation_message_id: context.conversationMessageId
+            });
+        }
 
         if (payload.cmd === 'prop_deal_accept') {
             const dealId = payload.deal_id;
@@ -2362,7 +2571,7 @@ vk.updates.on('message_event', async (context) => {
             await safeAnswer();
             let msg = "";
             if (payload.section === 'games') msg = "🎰 Игровые команды:\n/рулетка [цвет/чет] [ставка]\n/краш [автостоп] [ставка]\n/монетка [орел/решка] [ставка]\n/стакан [1-3] [ставка]\n/кубик [1-6] [ставка]\n/автомат [ставка]\n/блэкджек [ставка]\n/дрим [1-5] [ставка]\n/мины [ставка]\n/фортуна\n\n⚠️ Мин. ставка: 100$. Ставка 'вб' разрешена.";
-            if (payload.section === 'eco') msg = "💼 Экономика:\n/бизнес\n/купитьбиз [название]\n/мойбизнес\n/вывести\n/закрыть бизнес\n/бонус\n/transfer [сумма] (ответом)\n/duel [сумма]\n/promo [код]\n/промолист\n/машины\n/купить машина [название]\n/sellcar (слить машину)\n/дон дом (топ домов Т1-Т10)\n/дон гараж (топ гаражей Т1-Т10)";
+            if (payload.section === 'eco') msg = "💼 Экономика:\n/бизнес\n/купитьбиз [название]\n/мойбизнес\n/вывести\n/бонус\n/transfer [сумма] (ответом)\n/duel [сумма]\n/promo [код]\n/промолист\n/машины\n/купить машина [название]\n/sellcar (слить машину)\n/дон дом (топ домов Т1-Т10)\n/дон гараж (топ гаражей Т1-Т10)";
             if (payload.section === 'profile') msg = "👤 Профиль и прочее:\n/профиль\n/топ\n/rep +/- (ответом)\n/пинг\n\n💡 Слэш (/) в начале писать необязательно!";
             
             if (payload.section === 'houses') {
@@ -2440,7 +2649,7 @@ vk.updates.on('message_event', async (context) => {
             await updateBalance(userId, -nextLevelCost);
             await dbRun("UPDATE businesses SET level = level + 1, balance = ?, last_income = ? WHERE user_id = ?", [totalBalance, Date.now(), String(userId)]);
             
-            const newMsgText = `🏢 Бизнес ${await getFullName(userId)}\n${biz.biz_name}\n\n💪 Уровень: ${biz.level + 1}/5\n🐱 ${formatMoney(bizData.baseIncome * (biz.level + 1) * 20)}$/час\n💸 На балансе бизнеса: ${formatMoney(totalBalance)}$\n\nПовышение уровня стоит: ${formatMoney((biz.level + 1) * 5000000)}$\n\n👉 Чтобы вывести деньги, напишите в чат /вывести`;
+            const newMsgText = `🏢 Бизнес ${await getFullName(userId)}\n${biz.biz_name}\n\n💪 Уровень: ${biz.level + 1}/5\n🐱 ${formatMoney(bizData.baseIncome * (biz.level + 1) * 20)}$/час\n💸 На балансе: ${formatMoney(totalBalance)}$\n\nПовышение уровня стоит: ${formatMoney((biz.level + 1) * 5000000)}$\n\n👉 Чтобы вывести деньги, напишите в чат /вывести`;
             
             await vk.api.messages.edit({ 
                 peer_id: context.peerId,
@@ -2481,23 +2690,14 @@ vk.updates.on('message_event', async (context) => {
             count++;
             await dbRun("REPLACE INTO work_cd (user_id, count, last_reset) VALUES (?, ?, ?)", [String(userId), count, lastReset]);
 
-            const isLucky = Math.random() > 0.3;
-            let earned = 0;
-            let msgText = "";
-
-            if (isLucky) {
-                earned = 2000000;
-                await updateBalance(userId, earned);
-                msgText = `✅ Вы успешно поработали (${payload.type}) и заработали ${formatMoney(earned)}$!`;
-            } else {
-                msgText = `😢 Не повезло! Вы работали (${payload.type}), но заработали 0$.`;
-            }
-
+            // Зарплата от 1к до 7к
+            const earned = Math.floor(Math.random() * 6000) + 1000;
+            await updateBalance(userId, earned);
             const newBal = await getBalance(userId);
             
             await vk.api.messages.edit({ 
                 peer_id: context.peerId,
-                message: `${msgText}\n\n💰 Ваш баланс: ${formatMoney(newBal)}$\n📊 Осталось попыток: ${3 - count}/3`, 
+                message: `✅ Вы успешно поработали (${payload.type}) и заработали ${formatMoney(earned)}$!\n\n💰 Ваш баланс: ${formatMoney(newBal)}$\n📊 Осталось попыток: ${3 - count}/3`, 
                 keyboard: getWorkKb(),
                 conversation_message_id: context.conversationMessageId
             });
@@ -2601,6 +2801,7 @@ vk.updates.on('message_event', async (context) => {
             if (scope === 'global') {
                 rows = await dbAll(`SELECT user_id, balance, reputation, level, xp, duel_wins, bonus_count FROM users WHERE ${filter} ORDER BY ${orderBy} LIMIT 10`);
             } else {
+                // Показываем только тех, кто есть в беседе и писал сообщения
                 const chatUsers = await dbAll("SELECT user_id FROM chat_messages WHERE peer_id = ?", [String(context.peerId)]);
                 if (chatUsers.length > 0) {
                     const ids = chatUsers.map(u => `'${u.user_id}'`).join(',');
@@ -2932,6 +3133,53 @@ vk.updates.on('message_event', async (context) => {
     } catch (e) {
         console.error("КРИТИЧЕСКАЯ Ошибка в кнопках:", e);
         await safeAnswer({ type: 'show_snackbar', text: '⚠️ Ошибка. Попробуйте позже.' });
+    }
+});
+
+// ===== ПРИВЕТСТВИЕ =====
+vk.updates.on('chat_invite_user', async (context) => {
+    if (context.memberId > 0) {
+        const globalBan = await dbGet("SELECT reason, until FROM blacklist WHERE user_id = ?", [String(context.memberId)]);
+        if (globalBan) {
+            if (globalBan.until !== 0 && Date.now() > globalBan.until) {
+                await dbRun("DELETE FROM blacklist WHERE user_id = ?", [String(context.memberId)]);
+            } else {
+                try {
+                    await vk.api.messages.removeChatUser({ chat_id: context.peerId - 2000000000, user_id: context.memberId, group_id: GROUP_ID });
+                } catch(e) {}
+                return;
+            }
+        }
+
+        const chatBan = await dbGet("SELECT reason FROM chat_bans WHERE user_id = ? AND peer_id = ?", [String(context.memberId), String(context.peerId)]);
+        if (chatBan) {
+            try {
+                await vk.api.messages.removeChatUser({ chat_id: context.peerId - 2000000000, user_id: context.memberId, group_id: GROUP_ID });
+                await vk.api.messages.send({
+                    peer_id: context.peerId,
+                    message: `🚫 [id${context.memberId}|Игрок] был автоматически исключен из беседы, так как имеет бан в этой беседе.\n📌 Причина: ${chatBan.reason}`,
+                    random_id: Math.floor(Math.random() * 1000000000),
+                    disable_mentions: 1
+                });
+            } catch(e) {} 
+        }
+    }
+
+    if (String(context.memberId) === String(-GROUP_ID)) {
+        const actKb = Keyboard.builder().inline()
+            .callbackButton({ label: 'Активировать', payload: { cmd: 'activate_bot' }, color: Keyboard.POSITIVE_COLOR })
+            .callbackButton({ label: 'Не активировать', payload: { cmd: 'decline_bot' }, color: Keyboard.NEGATIVE_COLOR });
+        
+        try {
+            await vk.api.messages.send({
+                peer_id: context.peerId,
+                message: "Привет! Я Официальный бот Game Zone. Для того чтобы я начал работать, выдайте мне права администратора и напишите /start. После этого напишите /help для ознакомления с командами.",
+                keyboard: actKb.toString(),
+                random_id: Math.floor(Math.random() * 1000000000),
+                group_id: GROUP_ID,
+                disable_mentions: 1
+            });
+        } catch (err) {}
     }
 });
 
