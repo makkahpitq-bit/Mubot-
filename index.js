@@ -47,6 +47,7 @@ const dbAll = (query, params = []) => new Promise((res, rej) => db.all(query, pa
 // ===== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ =====
 const gameCooldowns = new Map(); 
 const adminStates = new Map(); 
+const spamCache = new Map(); 
 const chsbNotifyCache = new Map(); 
 const pendingDebts = new Map();
 
@@ -69,7 +70,8 @@ const CARS_DATA = {
     'мерседес': { name: 'Mercedes-Benz E-Class', price: 10000000, sellPrice: 6000000 },
     'ауди': { name: 'Audi RS7', price: 18000000, sellPrice: 12000000 },
     'ламборгини': { name: 'Lamborghini Huracan', price: 35000000, sellPrice: 25000000 },
-    'порше': { name: 'Porsche 911 Turbo', price: 28000000, sellPrice: 20000000 }
+    'порше': { name: 'Porsche 911 Turbo', price: 28000000, sellPrice: 20000000 },
+    'бугатти': { name: 'Bugatti Chiron', price: 0, sellPrice: 0 } // Легендарная машина для кейса
 };
 
 const PROPERTY_DATA = {
@@ -110,12 +112,21 @@ async function initDB() {
     await dbRun("CREATE TABLE IF NOT EXISTS reports (id INTEGER PRIMARY KEY AUTOINCREMENT, reporter_id TEXT, text TEXT, status TEXT DEFAULT 'pending', chat_id TEXT, reply_text TEXT, rating INTEGER DEFAULT 0, rate_reason TEXT)");
 
     // Таблица для зимнего ивента
-    await dbRun("CREATE TABLE IF NOT EXISTS winter_event (user_id TEXT PRIMARY KEY, reps_given INTEGER DEFAULT 0, game_score INTEGER DEFAULT 0, msgs_sent INTEGER DEFAULT 0, completed INTEGER DEFAULT 0)");
+    await dbRun("CREATE TABLE IF NOT EXISTS winter_event (user_id TEXT PRIMARY KEY, reps_given INTEGER DEFAULT 0, game_score INTEGER DEFAULT 0, msgs_sent INTEGER DEFAULT 0, completed INTEGER DEFAULT 0, last_opened INTEGER DEFAULT 0)");
+    
+    // Таблица лимитов зимних игр (0/10)
+    await dbRun("CREATE TABLE IF NOT EXISTS winter_limits (user_id TEXT PRIMARY KEY, snowballs INTEGER DEFAULT 0, tree INTEGER DEFAULT 0, sleds INTEGER DEFAULT 0, snowman INTEGER DEFAULT 0, gift INTEGER DEFAULT 0)");
+
+    // Таблица полученных призов из кейса (чтобы не падали дважды)
+    await dbRun("CREATE TABLE IF NOT EXISTS winter_case_prizes (user_id TEXT PRIMARY KEY, bugatti INTEGER DEFAULT 0, premium_forever INTEGER DEFAULT 0)");
 
     try { await dbRun("ALTER TABLE users ADD COLUMN sim_card TEXT"); } catch(e) {}
     try { await dbRun("ALTER TABLE users ADD COLUMN cars TEXT DEFAULT '[]'"); } catch(e) {}
 
-    // Настройки антиспама удалены из инициализации
+    await dbRun("INSERT OR IGNORE INTO settings (key, value) VALUES ('antispam_enabled', '0')");
+    await dbRun("INSERT OR IGNORE INTO settings (key, value) VALUES ('antispam_limit', '5')");
+    await dbRun("INSERT OR IGNORE INTO settings (key, value) VALUES ('antispam_time', '60')");
+    await dbRun("INSERT OR IGNORE INTO settings (key, value) VALUES ('antispam_mute', '10')");
     
     console.log("--- БАЗА ДАННЫХ ГОТОВА ---");
 }
@@ -201,6 +212,7 @@ async function getTargetAndReason(message, cmdName) {
     if (!reason) reason = "Причина не указана";
     return { targetId, reason };
 }
+
 // ===== ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ (ИСПРАВЛЕНО ОТ ВЫЛЕТОВ) =====
 async function generateProfileImage(userId) {
     try {
@@ -256,27 +268,35 @@ async function generateBizImage(userId, bizName) {
     } catch (e) { return null; }
 }
 
+// Красивая генерация рулетки (как на скрине Black Fortex)
 async function generateRouletteImage(number, color) {
     try {
         const img = await Jimp.read(ROULETTE_PHOTOS[0]);
-        const canvas = new Jimp(1080, 700, 0x101010FF);
+        const width = img.bitmap.width;
+        const height = img.bitmap.height;
+        
+        const canvas = new Jimp(width, height + 150, 0x101010FF);
         canvas.composite(img, 0, 0);
         
-        let barColor = 0xFF0000FF; 
-        if (color === 'black') barColor = 0x000000FF;
+        let barColor = 0xD32F2FFF; // Красный по умолчанию
+        if (color === 'black') barColor = 0x212121FF;
+        if (color === 'green') barColor = 0x388E3CFF;
         
-        const bar = new Jimp(1080, 100, barColor);
-        canvas.composite(bar, 0, 600);
+        const bar = new Jimp(width, 150, barColor);
+        canvas.composite(bar, 0, height);
         
         try {
-            const font = await Jimp.loadFont(Jimp.FONT_SANS_64_WHITE);
+            const font = await Jimp.loadFont(Jimp.FONT_SANS_128_WHITE);
             if (font) {
-                canvas.print(font, 0, 610, { text: String(number), alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER }, 1080, 100);
+                canvas.print(font, 0, height + 10, { text: String(number), alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER }, width, 140);
             }
         } catch(e) {}
         
         return await canvas.getBufferAsync(Jimp.MIME_PNG);
-    } catch(e) { return null; }
+    } catch(e) { 
+        console.error("Ошибка генерации рулетки:", e);
+        return null; 
+    }
 }
 
 function getMinesGameUI(gameId, bet, minesCount, minesArr, opened, isLoss = false, hitCell = null, name = "", balance = 0, timeLeft = 60) {
@@ -329,7 +349,6 @@ function buildMinesKb(gameId, opened, mines = [], isGameOver = false, hitCell = 
     }
     return kb.toString();
 }
-
 // ===== КЛАВИАТУРЫ =====
 const mainKb = Keyboard.builder()
     .callbackButton({ label: '💼 Работа', payload: { cmd: 'main_menu', action: 'work' }, color: Keyboard.POSITIVE_COLOR })
@@ -384,6 +403,18 @@ const getHelpBackKb = () => {
         .toString();
 };
 
+const getSettingsKb = async (enabled, limit, time, mute) => {
+    const kb = Keyboard.builder().inline();
+    kb.callbackButton({ label: '🟢 Включить', payload: { cmd: 'settings_toggle', state: '1' }, color: enabled === '1' ? Keyboard.POSITIVE_COLOR : Keyboard.SECONDARY_COLOR });
+    kb.callbackButton({ label: '🔴 Выключить', payload: { cmd: 'settings_toggle', state: '0' }, color: enabled === '0' ? Keyboard.NEGATIVE_COLOR : Keyboard.SECONDARY_COLOR });
+    kb.row();
+    kb.callbackButton({ label: `Лимит: ${limit}`, payload: { cmd: 'settings_edit', field: 'limit' }, color: Keyboard.SECONDARY_COLOR });
+    kb.callbackButton({ label: `Время (сек): ${time}`, payload: { cmd: 'settings_edit', field: 'time' }, color: Keyboard.SECONDARY_COLOR });
+    kb.row();
+    kb.callbackButton({ label: `Мут (мин): ${mute}`, payload: { cmd: 'settings_edit', field: 'mute' }, color: Keyboard.SECONDARY_COLOR });
+    return kb.toString();
+};
+
 const getDuelKb = (duelId) => {
     return Keyboard.builder().inline().callbackButton({ label: '⚔️ Сразиться', payload: { cmd: 'duel_accept', duel_id: duelId }, color: Keyboard.POSITIVE_COLOR }).toString();
 };
@@ -427,6 +458,7 @@ const getBizKb = (authorId) => {
         .callbackButton({ label: 'Вывести $$$', payload: { cmd: 'biz_withdraw', author: authorId }, color: Keyboard.POSITIVE_COLOR })
         .row()
         .callbackButton({ label: 'Повысить уровень', payload: { cmd: 'biz_upgrade', author: authorId }, color: Keyboard.SECONDARY_COLOR })
+        .callbackButton({ label: '🔥 Слить бизнес', payload: { cmd: 'biz_sell', author: authorId }, color: Keyboard.NEGATIVE_COLOR })
         .toString();
 };
 
@@ -466,10 +498,29 @@ const getBadRateKb = (reportId) => {
         .toString();
 };
 
+const getGoodRateKb = (reportId) => {
+    return Keyboard.builder().inline()
+        .callbackButton({ label: '✅ Быстро ответил', payload: { cmd: 'report_good_reason', report_id: reportId, reason: 'Быстро ответил' }, color: Keyboard.POSITIVE_COLOR })
+        .callbackButton({ label: '🤝 Помог решить проблему', payload: { cmd: 'report_good_reason', report_id: reportId, reason: 'Помог решить проблему' }, color: Keyboard.POSITIVE_COLOR })
+        .row()
+        .callbackButton({ label: '😊 Вежливый админ', payload: { cmd: 'report_good_reason', report_id: reportId, reason: 'Вежливый админ' }, color: Keyboard.POSITIVE_COLOR })
+        .callbackButton({ label: '🌟 Всё супер!', payload: { cmd: 'report_good_reason', report_id: reportId, reason: 'Всё супер!' }, color: Keyboard.POSITIVE_COLOR })
+        .row()
+        .callbackButton({ label: '❌ Закрыть репорт', payload: { cmd: 'report_close', report_id: reportId }, color: Keyboard.NEGATIVE_COLOR })
+        .toString();
+};
+
 const getDebtKb = (debtId) => {
     return Keyboard.builder().inline()
         .callbackButton({ label: '✅ Принять', payload: { cmd: 'debt_accept', debt_id: debtId }, color: Keyboard.POSITIVE_COLOR })
         .callbackButton({ label: '❌ Отказать', payload: { cmd: 'debt_decline', debt_id: debtId }, color: Keyboard.NEGATIVE_COLOR })
+        .toString();
+};
+
+const getAdminCallKb = (reporterId, targetId, text) => {
+    return Keyboard.builder().inline()
+        .callbackButton({ label: '✅ Принять жалобу', payload: { cmd: 'admin_call_accept', reporter_id: reporterId, target_id: targetId, text: text }, color: Keyboard.POSITIVE_COLOR })
+        .callbackButton({ label: '🚫 Спам/Флуд', payload: { cmd: 'admin_call_spam', reporter_id: reporterId }, color: Keyboard.NEGATIVE_COLOR })
         .toString();
 };
 
@@ -553,7 +604,48 @@ vk.updates.on('message_new', async (message) => {
             }
         }
 
-        // АНТИСПАМ УДАЛЕН
+        // --- АНТИСПАМ ---
+        if (message.isChat && userId !== ADMIN_ID) {
+            const spamEnabled = await dbGet("SELECT value FROM settings WHERE key = 'antispam_enabled'");
+            if (spamEnabled && spamEnabled.value === '1') {
+                const limit = Number((await dbGet("SELECT value FROM settings WHERE key = 'antispam_limit'")).value || 5);
+                const timeSec = Number((await dbGet("SELECT value FROM settings WHERE key = 'antispam_time'")).value || 60);
+                const muteMin = Number((await dbGet("SELECT value FROM settings WHERE key = 'antispam_mute'")).value || 10);
+
+                const now = Date.now();
+                const cacheKey = `${peerId}_${userId}`;
+                let spamData = spamCache.get(cacheKey) || { count: 0, lastReset: now, isMuted: false, muteEndTime: 0 };
+
+                if (spamData.isMuted) {
+                    if (now < spamData.muteEndTime) {
+                        try { await vk.api.messages.delete({ message_ids: [message.id], delete_for_all: 1 }); } catch (e) {}
+                        return; 
+                    } else spamData.isMuted = false;
+                }
+
+                if (now - spamData.lastReset >= timeSec * 1000) {
+                    spamData.count = 0;
+                    spamData.lastReset = now;
+                }
+
+                spamData.count++;
+                spamCache.set(cacheKey, spamData);
+
+                if (spamData.count >= limit && !spamData.isMuted) {
+                    spamData.isMuted = true; 
+                    spamData.muteEndTime = now + (muteMin * 60 * 1000);
+                    spamCache.set(cacheKey, spamData);
+                    
+                    try {
+                        await vk.api.messages.changeConversationMemberRestrictions({ group_id: GROUP_ID, peer_id: peerId, member_id: userId, action: 'ro', for: muteMin * 60 });
+                        await message.reply(`🚫 [id${userId}|Игрок] получил блокировку чата на ${muteMin} минут за нарушение антиспама.`);
+                        spamData.count = 0; 
+                        spamCache.set(cacheKey, spamData);
+                        try { await vk.api.messages.delete({ message_ids: [message.id], delete_for_all: 1 }); } catch(e) {}
+                    } catch(e) { spamData.isMuted = false; spamCache.set(cacheKey, spamData); }
+                }
+            }
+        }
 
         // --- НАСТРОЙКИ / ОТВЕТЫ НА РЕПОРТЫ (АДМИН) ---
         if (userId === ADMIN_ID && adminStates.has(userId)) {
@@ -572,25 +664,28 @@ vk.updates.on('message_new', async (message) => {
                     const replyMsg = `📩 Вам ответил администратор [id${ADMIN_ID}|Владелец]:\n\n${replyText}\n\n👇 Пожалуйста, оцените работу или закройте вопрос:`;
                     
                     try {
-                        // Отправка в ЛС игроку
                         await vk.api.messages.send({ peer_id: report.reporter_id, message: replyMsg, keyboard: replyKb.toString(), random_id: Math.floor(Math.random() * 1000000000) });
-                        
-                        // Если репорт был из беседы, отправляем уведомление туда же
                         if (report.chat_id && report.chat_id > 0) {
                             await vk.api.messages.send({ 
                                 peer_id: report.chat_id, 
-                                message: `📩 Ответ на репорт #${reportId} отправлен в ЛС [id${report.reporter_id}|Игроку].\nАдминистратор: [id${ADMIN_ID}|Владелец]`, 
-                                random_id: Math.floor(Math.random() * 1000000000),
-                                disable_mentions: 1
+                                message: `📩 Ответ на ваш репорт отправлен в ЛС [id${report.reporter_id}|Игроку].`, 
+                                random_id: Math.floor(Math.random() * 1000000000) 
                             });
                         }
                     } catch(e) {}
                 }
                 return await message.reply("✅ Ответ отправлен игроку. Ожидайте оценки.");
             }
+
+            const val = parseFloat(cleanText);
+            if (!isNaN(val) && val > 0) {
+                await dbRun("UPDATE settings SET value = ? WHERE key = ?", [String(val), state]);
+                adminStates.delete(userId);
+                return await message.reply(`✅ Настройки антиспама сохранены!`, { keyboard: await getSettingsKb((await dbGet("SELECT value FROM settings WHERE key = 'antispam_enabled'")).value, (await dbGet("SELECT value FROM settings WHERE key = 'antispam_limit'")).value, (await dbGet("SELECT value FROM settings WHERE key = 'antispam_time'")).value, (await dbGet("SELECT value FROM settings WHERE key = 'antispam_mute'")).value) });
+            }
         }
 
-        const validCmds = ['стакан', 'кубик', 'монетка', 'дрим', 'краш', 'рулетка', 'рул', 'автомат', 'блэкджек', 'мины', 'топ', 'профиль', 'баланс', 'бизнес', 'машины', 'работа', 'бонус', 'фортуна', 'казино', 'help', 'помощь', 'start', 'начать', 'transfer', 'перевод', 'duel', 'вывести', 'мойбизнес', 'закрыть', 'rep', 'реп', 'промолист', 'promo', 'купить', 'купитьбиз', 'чсб', 'разчсб', 'kick', 'выдать', 'обнулить', 'создать', 'cc', 'ping', 'пинг', 'убрать', 'дом', 'дома', 'гараж', 'гаражи', 'продать', 'бан', 'kl', 'mute', 'unmute', 'размут', 'unban', 'разбан', 'заморозить', 'разморозить', 'снять', 'unfreeze', 'pr', 'sellcar', 'слить', 'дон', 'дондом', 'донгараж', 'cmd', 'моикоманды', 'premium', 'магаз', 'reg', 'q', 'админ', 'ahelp', 'объявление', 'report', 'вступить', 'организации', 'страна', 'страны', 'датьдолг', 'мойдолг', 'cl', 'снятьпред', 'купитьсим', 'слитьсим', 'event', 'открыть', 'снежки', 'елка', 'санки'];
+        const validCmds = ['стакан', 'кубик', 'монетка', 'дрим', 'краш', 'рулетка', 'рул', 'автомат', 'блэкджек', 'мины', 'топ', 'профиль', 'баланс', 'бизнес', 'машины', 'работа', 'бонус', 'фортуна', 'казино', 'help', 'помощь', 'start', 'начать', 'transfer', 'перевод', 'duel', 'вывести', 'мойбизнес', 'закрыть', 'rep', 'реп', 'промолист', 'promo', 'купить', 'купитьбиз', 'чсб', 'разчсб', 'kick', 'выдать', 'обнулить', 'создать', 'cc', 'ping', 'пинг', 'убрать', 'настройки', 'дом', 'дома', 'гараж', 'гаражи', 'продать', 'бан', 'kl', 'mute', 'unmute', 'размут', 'unban', 'разбан', 'заморозить', 'разморозить', 'снять', 'unfreeze', 'pr', 'sellcar', 'слить', 'дон', 'дондом', 'донгараж', 'cmd', 'моикоманды', 'premium', 'магаз', 'reg', 'q', 'админ', 'ahelp', 'объявление', 'report', 'вступить', 'организации', 'страна', 'страны', 'датьдолг', 'мойдолг', 'cl', 'снятьпред', 'купитьсим', 'слитьсим', 'event', 'открыть', 'снежки', 'елка', 'санки', 'снеговик', 'подарок', 'слитьбиз'];
         
         if (!validCmds.includes(cmdWord)) return; 
 
@@ -733,7 +828,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(`📱 Вы успешно слили сим-карту за 10,000$!`, replyParams());
         }
 
-        // --- РЕПУТАЦИЯ (ВОЗВРАЩЕН ТВОЙ ШАБЛОН) ---
+        // --- РЕПУТАЦИЯ (ФИКС СЧЕТЧИКА ДЛЯ ИВЕНТА) ---
         if (cmdWord === 'rep' || cmdWord === 'реп') {
             if (parts.length < 2) {
                 return await message.reply("🔔 Для изменения репутации используйте /rep + или /rep -, указав пользователя. Пример: /rep + @Mokhma.volk\n(Доступно 3 изменения в сутки)", replyParams());
@@ -777,8 +872,15 @@ vk.updates.on('message_new', async (message) => {
             repCount++;
             await dbRun("REPLACE INTO rep_limits (user_id, count, last_reset) VALUES (?, ?, ?)", [String(userId), repCount, repReset]);
 
-            if (isPlus) await updateReputation(targetId, 1);
-            else await updateReputation(targetId, -1);
+            if (isPlus) {
+                await updateReputation(targetId, 1);
+                // Обновляем прогресс ивента
+                let ev = await dbGet("SELECT * FROM winter_event WHERE user_id = ?", [String(userId)]);
+                if (!ev) await dbRun("INSERT INTO winter_event (user_id) VALUES (?)", [String(userId)]);
+                await dbRun("UPDATE winter_event SET reps_given = reps_given + 1 WHERE user_id = ?", [String(userId)]);
+            } else {
+                await updateReputation(targetId, -1);
+            }
 
             return await message.reply(`✅ Вы ${isPlus ? 'повысили' : 'понизили'} репутацию ${await getFullName(targetId)}. Осталось: ${3 - repCount}/3`, replyParams());
         }
@@ -864,7 +966,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply("✅ Ваш репорт отправлен администрации. Ожидайте ответа.");
         }
 
-        // --- ПРОФИЛЬ ---
+        // --- ПРОФИЛЬ (ЗИМНИЕ ЭМОДЗИ) ---
         if (cmdWord === 'профиль' || cmdWord === 'баланс') {
             const houseData = await dbGet("SELECT location, tier FROM properties WHERE owner_id = ? AND type = 'house' LIMIT 1", [String(userId)]);
             const garageData = await dbGet("SELECT location, tier FROM properties WHERE owner_id = ? AND type = 'garage' LIMIT 1", [String(userId)]);
@@ -876,7 +978,20 @@ vk.updates.on('message_new', async (message) => {
             const carsStr = carsArr.length > 0 ? carsArr.join(', ') : "Нет";
             const simStr = userRow.sim_card || "Нет";
 
-            const profText = `🏠 Профиль ${await getFullName(userId)}\n\n💵 Баланс: ${formatMoney(balance)}$\n📱 Тел: ${simStr}\n💎 Премиум: ${premStr}\n⭐ Реп: ${rep}\n📊 Уровень: ${userRow.level} (${userRow.xp}/${userRow.level*500} XP)\n\n🏢 Бизнес: ${bizStr}\n🏠 Дом: ${houseData ? houseData.location + ' Т' + houseData.tier : "Нет"}\n🏘️ Гараж: ${garageData ? garageData.location + ' Т' + garageData.tier : "Нет"}\n🚗 Машины (${carsArr.length}/10): ${carsStr}\n🏛️ Организация: ${userRow.org || "Нет"}\n🌍 Страна: ${userRow.country || "Нет"}\n👕 Одежда: ${userRow.clothes ? "Надета" : "Базовая"}\n\n🆔 ID: ${userId}`;
+            const profText = `❄️ Профиль ${await getFullName(userId)} ❄️\n\n` +
+                             `💵 Баланс: ${formatMoney(balance)}$\n` +
+                             `📱 Тел: ${simStr}\n` +
+                             `💎 Премиум: ${premStr}\n` +
+                             `⭐ Реп: ${rep}\n` +
+                             `📊 Уровень: ${userRow.level} (${userRow.xp}/${userRow.level*500} XP)\n\n` +
+                             `🏢 Бизнес: ${bizStr}\n` +
+                             `🏠 Дом: ${houseData ? houseData.location + ' Т' + houseData.tier : "Нет"}\n` +
+                             `🏘️ Гараж: ${garageData ? garageData.location + ' Т' + garageData.tier : "Нет"}\n` +
+                             `🚗 Машины (${carsArr.length}/10): ${carsStr}\n` +
+                             `🏛️ Орг: ${userRow.org || "Нет"}\n` +
+                             `🌍 Страна: ${userRow.country || "Нет"}\n` +
+                             `👕 Одежда: ${userRow.clothes ? "Надета" : "Базовая"}\n\n` +
+                             `🆔 ID: ${userId}`;
 
             let attachment = null;
             try {
@@ -1031,8 +1146,201 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(topText, replyParams(getTopKb(userId, 'coins', 'chat')));
         }
 
+        // --- ЗИМНИЕ ИГРЫ (ЛИМИТ 0/10, ПРИЗЫ 1КК-5КК) ---
+        async function checkWinterLimit(gameField) {
+            let lim = await dbGet(`SELECT ${gameField} FROM winter_limits WHERE user_id = ?`, [String(userId)]);
+            if (!lim) {
+                await dbRun(`INSERT INTO winter_limits (user_id) VALUES (?)`, [String(userId)]);
+                lim = { [gameField]: 0 };
+            }
+            if (lim[gameField] >= 10) return false;
+            await dbRun(`UPDATE winter_limits SET ${gameField} = ${gameField} + 1 WHERE user_id = ?`, [String(userId)]);
+            return true;
+        }
+
+        if (cmdWord === 'снежки') {
+            if (!(await checkWinterLimit('snowballs'))) return await message.reply("❄️ Лимит снежков исчерпан (10/10)! Ждите обновления.", replyParams());
+            const prize = Math.floor(Math.random() * 4000000) + 1000000; // 1кк - 5кк
+            await updateBalance(userId, prize);
+            return await message.reply(`❄️ Вы попали снежком!\n💰 Награда: +${formatMoney(prize)}$`, replyParams());
+        }
+
+        if (cmdWord === 'елка') {
+            if (!(await checkWinterLimit('tree'))) return await message.reply("🎄 Лимит елки исчерпан (10/10)!", replyParams());
+            const prize = Math.floor(Math.random() * 4000000) + 1000000;
+            await updateBalance(userId, prize);
+            return await message.reply(`🎄 Елка дрогнула!\n💰 Из неё выпало: +${formatMoney(prize)}$`, replyParams());
+        }
+
+        if (cmdWord === 'санки') {
+            if (!(await checkWinterLimit('sleds'))) return await message.reply("🛷 Лимит санок исчерпан (10/10)!", replyParams());
+            const prize = Math.floor(Math.random() * 4000000) + 1000000;
+            await updateBalance(userId, prize);
+            return await message.reply(`🛷 Вы пронеслись с горы!\n💰 Приз: +${formatMoney(prize)}$`, replyParams());
+        }
+
+        // НОВЫЕ ЗИМНИЕ КОМАНДЫ
+        if (cmdWord === 'снеговик') {
+            if (!(await checkWinterLimit('snowman'))) return await message.reply("⛄ Лимит снеговика исчерпан (10/10)!", replyParams());
+            const prize = Math.floor(Math.random() * 4000000) + 1000000;
+            await updateBalance(userId, prize);
+            return await message.reply(`⛄ Снеговик ожил и подарил вам монетки!\n💰 +${formatMoney(prize)}$`, replyParams());
+        }
+
+        if (cmdWord === 'подарок') {
+            if (!(await checkWinterLimit('gift'))) return await message.reply("🎁 Лимит подарков исчерпан (10/10)!", replyParams());
+            const prize = Math.floor(Math.random() * 4000000) + 1000000;
+            await updateBalance(userId, prize);
+            return await message.reply(`🎁 Вы нашли новогодний подарок!\n💰 Внутри: +${formatMoney(prize)}$`, replyParams());
+        }
+
+        // --- ЗИМНИЙ ИВЕНТ (КУЛДАУН 24Ч ПОСЛЕ ОТКРЫТИЯ) ---
+        if (cmdWord === 'event') {
+            let eventRow = await dbGet("SELECT * FROM winter_event WHERE user_id = ?", [String(userId)]);
+            if (!eventRow) {
+                await dbRun("INSERT INTO winter_event (user_id) VALUES (?)", [String(userId)]);
+                eventRow = { reps_given: 0, game_score: 0, msgs_sent: 0, completed: 0, last_opened: 0 };
+            }
+
+            // Если уже открывал кейс, проверяем кулдаун 24 часа
+            if (eventRow.last_opened > 0) {
+                const hoursLeft = Math.ceil((86400000 - (Date.now() - eventRow.last_opened)) / 3600000);
+                if (hoursLeft > 0) {
+                    return await message.reply(`❄️ Вы уже открывали кейс сегодня!\n⏳ Следующие задания через ${hoursLeft} ч.`, replyParams());
+                }
+            }
+
+            const msgRow = await dbGet("SELECT count FROM chat_messages WHERE peer_id = ? AND user_id = ?", [String(peerId), String(userId)]);
+            const currentMsgs = msgRow ? msgRow.count : 0;
+
+            const task1Done = eventRow.reps_given >= 10;
+            const task2Done = eventRow.game_score >= 10000;
+            const task3Done = currentMsgs >= 100;
+
+            if (task1Done && task2Done && task3Done) {
+                if (eventRow.completed !== 1) {
+                    await dbRun("UPDATE winter_event SET completed = 1 WHERE user_id = ?", [String(userId)]);
+                    return await message.reply(`🎉 ЗАДАНИЯ ВЫПОЛНЕНЫ!\n\n🎁 Вы получили: Кейс "Зимний"\nНапишите: /открыть кейс зимний`, replyParams());
+                } else {
+                    return await message.reply(`🎁 У вас есть незатронутый Зимний кейс!\nНапишите: /открыть кейс зимний`, replyParams());
+                }
+            } else {
+                let progressText = `❄️ ЗИМНИЙ ИВЕНТ ❄️\n\n`;
+                progressText += `1️⃣ Выдать 10 реп\nСтатус: ${eventRow.reps_given}/10 ${task1Done ? '✅' : '⏳'}\n\n`;
+                progressText += `2️⃣ Набрать 10,000 очков в играх\nСтатус: ${eventRow.game_score}/10000 ${task2Done ? '✅' : '⏳'}\n\n`;
+                progressText += `3️⃣ Написать 100 сообщений здесь\nСтатус: ${currentMsgs}/100 ${task3Done ? '✅' : '⏳'}\n\n`;
+                return await message.reply(progressText, replyParams());
+            }
+        }
+
+        // --- ОТКРЫТИЕ КЕЙСА (НОВЫЕ ПРИЗЫ) ---
+        if (cmdWord === 'открыть') {
+            const caseName = parts.slice(1).join(' ').toLowerCase().trim();
+            if (caseName === 'кейс зимний' || caseName === 'зимний') {
+                const eventRow = await dbGet("SELECT completed, last_opened FROM winter_event WHERE user_id = ?", [String(userId)]);
+                
+                if (!eventRow || eventRow.completed !== 1) {
+                    return await message.reply("❌ У вас нет Зимнего кейса. Выполните /event.", replyParams());
+                }
+
+                // Проверка кулдауна при открытии
+                if (eventRow.last_opened > 0 && (Date.now() - eventRow.last_opened) < 86400000) {
+                    const h = Math.ceil((86400000 - (Date.now() - eventRow.last_opened)) / 3600000);
+                    return await message.reply(`⏳ Вы уже открывали кейс! Ждите ${h} ч.`, replyParams());
+                }
+
+                // Получаем данные о полученных уникальных призах
+                let prizesRow = await dbGet("SELECT * FROM winter_case_prizes WHERE user_id = ?", [String(userId)]);
+                if (!prizesRow) {
+                    await dbRun("INSERT INTO winter_case_prizes (user_id) VALUES (?)", [String(userId)]);
+                    prizesRow = { bugatti: 0, premium_forever: 0 };
+                }
+
+                // Список призов
+                const possiblePrizes = [
+                    { type: 'money', val: 4000000, text: '4,000,000$' },
+                    { type: 'money', val: 5000000, text: '5,000,000$' },
+                    { type: 'premium_year', text: 'Премиум на год' },
+                    { type: 'money', val: 10000000, text: '10,000,000$' },
+                    { type: 'bugatti', text: '🏎️ Bugatti Chiron' }, // Легендарная
+                    { type: 'money', val: 15000000, text: '15,000,000$' },
+                    { type: 'money', val: 20000000, text: '20,000,000$' },
+                    { type: 'rep', val: 10, text: '+10 Репутации' },
+                    { type: 'money', val: 100000000, text: '100,000,000$' },
+                    { type: 'premium_forever', text: '💎 Премиум НАВСЕГДА' }
+                ];
+
+                // Фильтруем призы, которые уже получены (если они уникальные)
+                let availablePrizes = possiblePrizes.filter(p => {
+                    if (p.type === 'bugatti' && prizesRow.bugatti) return false;
+                    if (p.type === 'premium_forever' && prizesRow.premium_forever) return false;
+                    return true;
+                });
+
+                // Если все уникальные призы получены, оставляем только деньги
+                if (availablePrizes.length === 0) availablePrizes = possiblePrizes.filter(p => p.type === 'money' || p.type === 'rep' || p.type === 'premium_year');
+
+                const prize = availablePrizes[Math.floor(Math.random() * availablePrizes.length)];
+                
+                let resultText = `📦 Вы открыли Зимний кейс!\n🎉 Вам выпало: ${prize.text}`;
+
+                // Выдача приза
+                if (prize.type === 'money') {
+                    await updateBalance(userId, prize.val);
+                } else if (prize.type === 'premium_year') {
+                    await dbRun("UPDATE users SET premium_until = ? WHERE user_id = ?", [Date.now() + 365 * 86400000, String(userId)]);
+                } else if (prize.type === 'premium_forever') {
+                    await dbRun("UPDATE users SET premium_until = ? WHERE user_id = ?", [9999999999999, String(userId)]);
+                    await dbRun("UPDATE winter_case_prizes SET premium_forever = 1 WHERE user_id = ?", [String(userId)]);
+                } else if (prize.type === 'rep') {
+                    await updateReputation(userId, prize.val);
+                } else if (prize.type === 'bugatti') {
+                    let carsArr = JSON.parse(userRow.cars || '[]');
+                    if (!carsArr.includes('Bugatti Chiron')) {
+                        carsArr.push('Bugatti Chiron');
+                        await dbRun("UPDATE users SET cars = ? WHERE user_id = ?", [JSON.stringify(carsArr), String(userId)]);
+                    }
+                    await dbRun("UPDATE winter_case_prizes SET bugatti = 1 WHERE user_id = ?", [String(userId)]);
+                }
+
+                // Обновляем время последнего открытия и сбрасываем completed для нового круга
+                await dbRun("UPDATE winter_event SET last_opened = ?, completed = 0, reps_given = 0, game_score = 0 WHERE user_id = ?", [Date.now(), String(userId)]);
+
+                return await message.reply(resultText, replyParams());
+            }
+        }
+
+        // --- БИЗНЕС: СЛИТЬ БИЗНЕС (+10КК) ---
+        if (cmdWord === 'слитьбиз') {
+            const biz = await dbGet("SELECT * FROM businesses WHERE user_id = ?", [String(userId)]);
+            if (!biz) return await message.reply("❌ У вас нет бизнеса.", replyParams());
+            
+            await updateBalance(userId, 10000000);
+            await dbRun("DELETE FROM businesses WHERE user_id = ?", [String(userId)]);
+            return await message.reply("🔥 Вы слили свой бизнес государству!\n💰 Получено: +10,000,000$", replyParams());
+        }
+
+        // --- /АДМИН (ВЫЗОВ ЧЕРЕЗ ОТВЕТ) ---
+        if (cmdWord === 'админ') {
+            if (!message.hasReplyMessage) return await message.reply("❌ Ответьте на сообщение нарушителя и напишите /админ", replyParams());
+            
+            const targetId = message.replyMessage.senderId;
+            const reportedText = message.replyMessage.text || "Сообщение без текста";
+            
+            // Отправляем владельцу в ЛС
+            const callKb = getAdminCallKb(userId, targetId, reportedText);
+            const adminMsg = `🚨 ВЫЗОВ АДМИНА!\n👤 Жалоба от: [id${userId}|Игрок]\n🎯 Нарушитель: [id${targetId}|Игрок]\n💬 Текст нарушения: "${reportedText}"`;
+            
+            try {
+                await vk.api.messages.send({ peer_id: ADMIN_ID, message: adminMsg, keyboard: callKb.toString(), random_id: 0 });
+                return await message.reply("✅ Жалоба отправлена владельцу. Ожидайте решения.", replyParams());
+            } catch(e) {
+                return await message.reply("❌ Не удалось отправить жалобу.", replyParams());
+            }
+        }
+
         // --- ИГРЫ ---
-        const gameCmds = ['рулетка', 'рул', 'краш', 'монетка', 'стакан', 'кубик', 'автомат', 'блэкджек', 'дрим', 'мины', 'фортуна', 'снежки', 'елка', 'санки'];
+        const gameCmds = ['рулетка', 'рул', 'краш', 'монетка', 'стакан', 'кубик', 'автомат', 'блэкджек', 'дрим', 'мины', 'фортуна', 'снежки', 'елка', 'санки', 'снеговик', 'подарок'];
         if (gameCmds.some(cmd => cmdWord === cmd)) {
             const lastPlayed = gameCooldowns.get(userId) || 0;
             if (Date.now() - lastPlayed < 10000) return await message.reply(`⏳ Подождите ${Math.ceil((10000 - (Date.now() - lastPlayed)) / 1000)} сек.`);
@@ -1193,109 +1501,9 @@ vk.updates.on('message_new', async (message) => {
             if (bet < 100 || bet > balance) return await message.reply("❌ Минимальная ставка 100$.", replyParams());
 
             const gameId = String(Math.floor(Math.random() * 90000) + 10000);
+            // Убираем start_time или ставим 0, чтобы не было таймера 60 сек
             await dbRun("INSERT INTO games (game_id, user_id, bet, mines, opened, multiplier, msg_id, start_time) VALUES (?, ?, ?, '[]', '[]', 1.0, ?, 0)", [gameId, String(userId), bet, String(message.id)]);
             return await message.reply(`💣 Мины\nСтавка: ${bet}$\n\nВыберите количество мин:`, replyParams(getMinesCountKb(gameId)));
-        }
-
-        // --- ЗИМНИЕ ИГРЫ ---
-        if (cmdWord === 'снежки') {
-            const winChance = Math.random();
-            if (winChance > 0.5) {
-                const prize = 5000;
-                await updateBalance(userId, prize);
-                // Обновляем прогресс ивента
-                let eventRow = await dbGet("SELECT * FROM winter_event WHERE user_id = ?", [String(userId)]);
-                if (!eventRow) await dbRun("INSERT INTO winter_event (user_id) VALUES (?)", [String(userId)]);
-                await dbRun("UPDATE winter_event SET game_score = game_score + ? WHERE user_id = ?", [prize, String(userId)]);
-                
-                return await message.reply(`❄️ Вы попали снежком точно в цель!\n💰 Награда: +${formatMoney(prize)}$`, replyParams());
-            } else {
-                return await message.reply(`❄️ Вы промахнулись снежком... Попробуйте еще раз!`, replyParams());
-            }
-        }
-
-        if (cmdWord === 'елка') {
-            const prizes = [1000, 2000, 5000, 10000, 0];
-            const prize = prizes[Math.floor(Math.random() * prizes.length)];
-            if (prize > 0) {
-                await updateBalance(userId, prize);
-                // Обновляем прогресс ивента
-                let eventRow = await dbGet("SELECT * FROM winter_event WHERE user_id = ?", [String(userId)]);
-                if (!eventRow) await dbRun("INSERT INTO winter_event (user_id) VALUES (?)", [String(userId)]);
-                await dbRun("UPDATE winter_event SET game_score = game_score + ? WHERE user_id = ?", [prize, String(userId)]);
-
-                return await message.reply(`🎄 Вы потрясли новогоднюю елку!\n💰 Из нее выпало: +${formatMoney(prize)}$`, replyParams());
-            } else {
-                return await message.reply(`🎄 Елка оказалась пустой... Может повезет в следующий раз?`, replyParams());
-            }
-        }
-
-        if (cmdWord === 'санки') {
-            const speed = Math.floor(Math.random() * 100) + 1;
-            if (speed > 80) {
-                const prize = 15000;
-                await updateBalance(userId, prize);
-                // Обновляем прогресс ивента
-                let eventRow = await dbGet("SELECT * FROM winter_event WHERE user_id = ?", [String(userId)]);
-                if (!eventRow) await dbRun("INSERT INTO winter_event (user_id) VALUES (?)", [String(userId)]);
-                await dbRun("UPDATE winter_event SET game_score = game_score + ? WHERE user_id = ?", [prize, String(userId)]);
-
-                return await message.reply(`🛷 Вы пронеслись на санках с бешеной скоростью (${speed} км/ч)!\n💰 Спонсор гонки дарит: +${formatMoney(prize)}$`, replyParams());
-            } else {
-                return await message.reply(`🛷 Вы медленно скатились с горки (${speed} км/ч). Быстрее надо!`, replyParams());
-            }
-        }
-
-        // --- ЗИМНИЙ ИВЕНТ ---
-        if (cmdWord === 'event') {
-            let eventRow = await dbGet("SELECT * FROM winter_event WHERE user_id = ?", [String(userId)]);
-            if (!eventRow) {
-                await dbRun("INSERT INTO winter_event (user_id) VALUES (?)", [String(userId)]);
-                eventRow = { reps_given: 0, game_score: 0, msgs_sent: 0, completed: 0 };
-            }
-
-            if (eventRow.completed === 1) {
-                return await message.reply("❄️ Вы уже выполнили все задания зимнего ивента и получили награду!", replyParams());
-            }
-
-            // Получаем кол-во сообщений в текущей беседе
-            const msgRow = await dbGet("SELECT count FROM chat_messages WHERE peer_id = ? AND user_id = ?", [String(peerId), String(userId)]);
-            const currentMsgs = msgRow ? msgRow.count : 0;
-
-            // Проверка выполнения заданий
-            const task1Done = eventRow.reps_given >= 10;
-            const task2Done = eventRow.game_score >= 10000;
-            const task3Done = currentMsgs >= 100;
-
-            if (task1Done && task2Done && task3Done) {
-                await dbRun("UPDATE winter_event SET completed = 1 WHERE user_id = ?", [String(userId)]);
-                return await message.reply(`🎉 ПОЗДРАВЛЯЕМ!\n\nВы успешно выполнили все задания зимнего ивента!\n\n🎁 Ваша награда: Кейс "Зимний"\nЧтобы открыть его, напишите: /открыть кейс зимний`, replyParams());
-            } else {
-                let progressText = `❄️ ЗИМНИЙ ИВЕНТ ❄️\n\nВыполните задания, чтобы получить Зимний кейс:\n\n`;
-                progressText += `1️⃣ Выдать 10 реп любому игроку\nСтатус: ${eventRow.reps_given}/10 ${task1Done ? '✅' : '⏳'}\n\n`;
-                progressText += `2️⃣ Набрать 10,000 очков в любой игре\nСтатус: ${eventRow.game_score}/10000 ${task2Done ? '✅' : '⏳'}\n\n`;
-                progressText += `3️⃣ Написать 100 сообщений в этой беседе\nСтатус: ${currentMsgs}/100 ${task3Done ? '✅' : '⏳'}\n\n`;
-                progressText += `Когда выполните всё, напишите /event еще раз, чтобы забрать награду!`;
-                return await message.reply(progressText, replyParams());
-            }
-        }
-
-        if (cmdWord === 'открыть') {
-            const caseName = parts.slice(1).join(' ').toLowerCase().trim();
-            if (caseName === 'кейс зимний' || caseName === 'зимний') {
-                const eventRow = await dbGet("SELECT completed FROM winter_event WHERE user_id = ?", [String(userId)]);
-                if (!eventRow || eventRow.completed !== 1) {
-                    return await message.reply("❌ У вас нет Зимнего кейса. Выполните зимний ивент (/event), чтобы получить его.", replyParams());
-                }
-                
-                // Удаляем флаг получения, чтобы нельзя было фармить (или можно оставить, если кейс одноразовый)
-                // Допустим, кейс одноразовый.
-                await dbRun("UPDATE winter_event SET completed = 2 WHERE user_id = ?", [String(userId)]);
-                
-                const prize = Math.floor(Math.random() * 50000) + 10000;
-                await updateBalance(userId, prize);
-                return await message.reply(`📦 Вы открыли Зимний кейс!\n💰 Внутри оказалось: ${formatMoney(prize)}$`, replyParams());
-            }
         }
 
         if (cmdWord === 'transfer' || cmdWord === 'перевод') {
@@ -1657,8 +1865,6 @@ vk.updates.on('message_new', async (message) => {
                     return await message.reply("⚠️ Укажите пользователя: /logs @vk");
                 }
                 
-                // Получаем историю сообщений (упрощенно, так как VK API не дает полную историю легко, берем из нашей базы чата если есть, или просто инфо)
-                // Для полноценных логов нужен отдельный модуль логирования, здесь сделаем заглушку с инфо о пользователе
                 const userInfo = await dbGet("SELECT * FROM users WHERE user_id = ?", [String(targetId)]);
                 const chatStats = await dbGet("SELECT count FROM chat_messages WHERE peer_id = ? AND user_id = ?", [String(peerId), String(targetId)]);
                 
@@ -1668,19 +1874,14 @@ vk.updates.on('message_new', async (message) => {
                 logText += `Сообщений в беседе: ${chatStats ? chatStats.count : 0}\n`;
                 logText += `Дата регистрации в боте: ${userInfo ? userInfo.reg_date : 'Неизвестно'}\n`;
                 
-                // Создаем файл
                 const fileName = `logs_${targetId}_${Date.now()}.txt`;
                 const filePath = path.join(DATA_DIR, fileName);
                 fs.writeFileSync(filePath, logText);
                 
                 try {
-                    // Отправляем файл владельцу в ЛС
                     const doc = await vk.upload.messageDocument({ peer_id: ADMIN_ID, source: { value: fs.createReadStream(filePath) } });
                     await vk.api.messages.send({ peer_id: ADMIN_ID, message: `Логи игрока [id${targetId}|Игрок]:`, attachment: doc.toString(), random_id: Math.floor(Math.random() * 1000000000) });
-                    
-                    // Удаляем файл после отправки
                     fs.unlinkSync(filePath);
-                    
                     return await message.reply("✅ Логи отправлены вам в ЛС.");
                 } catch(e) {
                     return await message.reply("❌ Ошибка при отправке логов.");
@@ -1711,6 +1912,20 @@ vk.updates.on('message_new', async (message) => {
                     txt += `▪️ [id${b.user_id}|Игрок] - ${b.reason} (${timeStr})\n`;
                 }
                 return await message.reply(txt);
+            }
+
+            // --- КОМАНДА /настройки ---
+            if (cmdWord === 'настройки') {
+                const enabled = (await dbGet("SELECT value FROM settings WHERE key = 'antispam_enabled'")).value;
+                const limit = (await dbGet("SELECT value FROM settings WHERE key = 'antispam_limit'")).value;
+                const time = (await dbGet("SELECT value FROM settings WHERE key = 'antispam_time'")).value;
+                const mute = (await dbGet("SELECT value FROM settings WHERE key = 'antispam_mute'")).value;
+
+                let statusText = enabled === '1' ? "🟢 Включен" : "🔴 Выключен";
+
+                return await message.reply(`⚙️ Настройки антиспама:\n\nСтатус: ${statusText}\n\nНажмите на кнопку, чтобы изменить параметр.`, {
+                    keyboard: await getSettingsKb(enabled, limit, time, mute)
+                });
             }
 
             // --- КОМАНДА /убрать ---
@@ -1994,12 +2209,10 @@ vk.updates.on('message_new', async (message) => {
         } catch (e) {}
     }
 });
+
 // ===== ОБРАБОТКА НАЖАТИЙ НА КНОПКИ (CALLBACK) =====
 vk.updates.on('message_event', async (context) => {
-    // Флаг для предотвращения двойного ответа на кнопку (защита от зависаний)
     let answered = false;
-    
-    // Универсальная функция для ответа на нажатие (всплывающее окно)
     const safeAnswer = async (params) => {
         if (!answered) {
             answered = true;
@@ -2008,604 +2221,336 @@ vk.updates.on('message_event', async (context) => {
     };
 
     try {
-        // Получаем данные из кнопки
         const payload = context.eventPayload;
         const userId = context.userId;
         const peerId = context.peerId;
 
-        // ================= ГЛАВНОЕ МЕНЮ (В ЛС И БЕСЕДЕ) =================
+        // ================= ГЛАВНОЕ МЕНЮ =================
         if (payload.cmd === 'main_menu') {
             await safeAnswer();
-            
-            if (payload.action === 'work') {
-                return await vk.api.messages.send({ 
-                    peer_id: peerId, 
-                    message: "💼 Выберите работу:", 
-                    keyboard: getWorkKb(), 
-                    random_id: Math.floor(Math.random() * 1000000000) 
-                });
-            }
-            
-            if (payload.action === 'roulette') {
-                return await vk.api.messages.send({ 
-                    peer_id: peerId, 
-                    message: "🎰 Напишите: рулетка [цвет] [ставка]\nПример: рулетка красное все", 
-                    random_id: Math.floor(Math.random() * 1000000000) 
-                });
-            }
-            
-            if (payload.action === 'profile') {
-                return await vk.api.messages.send({ 
-                    peer_id: peerId, 
-                    message: "Напишите профиль", 
-                    random_id: Math.floor(Math.random() * 1000000000) 
-                });
-            }
-            
-            if (payload.action === 'top') {
-                return await vk.api.messages.send({ 
-                    peer_id: peerId, 
-                    message: "Напишите топ", 
-                    random_id: Math.floor(Math.random() * 1000000000) 
-                });
-            }
+            if (payload.action === 'work') return await vk.api.messages.send({ peer_id: peerId, message: "💼 Выберите работу:", keyboard: getWorkKb(), random_id: 0 });
+            if (payload.action === 'roulette') return await vk.api.messages.send({ peer_id: peerId, message: "🎰 рулетка [цвет] [ставка]", random_id: 0 });
+            if (payload.action === 'profile') return await vk.api.messages.send({ peer_id: peerId, message: "Напишите профиль", random_id: 0 });
+            if (payload.action === 'top') return await vk.api.messages.send({ peer_id: peerId, message: "Напишите топ", random_id: 0 });
         }
 
-        // ================= СИСТЕМА РЕПОРТОВ (АДМИН) =================
+        // ================= РЕПОРТЫ =================
         if (payload.cmd === 'report_reply') {
-            // Проверка, что нажал именно владелец
-            if (userId !== ADMIN_ID) {
-                return await safeAnswer({ type: 'show_snackbar', text: '❌ Только владелец.' });
-            }
-            
-            // Получаем репорт из базы
+            if (userId !== ADMIN_ID) return await safeAnswer({ type: 'show_snackbar', text: '❌ Только владелец.' });
             const report = await dbGet("SELECT * FROM reports WHERE id = ?", [payload.report_id]);
+            if (!report || report.status !== 'pending') return await safeAnswer({ type: 'show_snackbar', text: '❌ Репорт закрыт.' });
             
-            if (!report || report.status !== 'pending') {
-                return await safeAnswer({ type: 'show_snackbar', text: '❌ Репорт уже закрыт или не существует.' });
-            }
-
             await safeAnswer();
-            
-            // Запоминаем состояние, что админ пишет ответ на этот репорт
             adminStates.set(ADMIN_ID, `reply_${payload.report_id}`);
-            
-            return await vk.api.messages.send({
-                peer_id: peerId,
-                message: `✍️ Напишите текст ответа для игрока [id${report.reporter_id}|Игрок] в ЛС прямо сейчас:`,
-                random_id: Math.floor(Math.random() * 1000000000)
-            });
+            return await vk.api.messages.send({ peer_id: peerId, message: `✍️ Напишите ответ для [id${report.reporter_id}|Игрока]:`, random_id: 0 });
         }
 
         if (payload.cmd === 'report_spam') {
-            if (userId !== ADMIN_ID) {
-                return await safeAnswer({ type: 'show_snackbar', text: '❌ Только владелец.' });
-            }
-
+            if (userId !== ADMIN_ID) return await safeAnswer({ type: 'show_snackbar', text: '❌ Только владелец.' });
             const report = await dbGet("SELECT * FROM reports WHERE id = ?", [payload.report_id]);
-            
-            if (!report || report.status !== 'pending') {
-                return await safeAnswer({ type: 'show_snackbar', text: '❌ Репорт уже закрыт.' });
-            }
+            if (!report || report.status !== 'pending') return await safeAnswer({ type: 'show_snackbar', text: '❌ Репорт закрыт.' });
 
-            // Наказываем того, кто отправил спам-жалобу (reporter_id)
             const reporterId = report.reporter_id;
-            
-            // Проверяем, сколько у него предупреждений
             const w = await dbGet("SELECT count FROM warnings WHERE user_id = ?", [String(reporterId)]);
             let warns = w ? w.count + 1 : 1;
             
-            const spamMsg = `❌ ВАШ РЕПОРТ ОТКЛОНЕН!\n\nПричина: СПАМ.\nВаш счет: ${warns}/3.\n⚠️ При 3-х предупреждениях вы будете автоматически отправлены в ЧС!\n\nКто выдал: [id${ADMIN_ID}|Администратор].`;
+            const spamMsg = `❌ ВАШ РЕПОРТ ОТКЛОНЕН!\nПричина: СПАМ/ФЛУД.\nСчет: ${warns}/3.\n⚠️ При 3 предупреждениях — ЧС бота!`;
 
-            // Если 3 предупреждения - отправляем в ЧС на 1 день
             if (warns >= 3) {
-                await dbRun("REPLACE INTO blacklist (user_id, reason, until) VALUES (?, ?, ?)", [String(reporterId), "Спам (3/3)", Date.now() + 86400000]); 
+                await dbRun("REPLACE INTO blacklist (user_id, reason, until) VALUES (?, ?, ?)", [String(reporterId), "Спам по репорту (3/3)", Date.now() + 86400000]); 
                 await dbRun("DELETE FROM warnings WHERE user_id = ?", [String(reporterId)]);
-                
                 try {
-                    const banKb = Keyboard.builder().inline()
-                        .urlButton({ label: 'Обжалование', url: `https://vk.ru/topic-243089386_69303056` })
-                        .row()
-                        .urlButton({ label: 'Правила бота', url: `https://vk.ru/topic-243089386_69454146` });
-                        
-                    await vk.api.messages.send({ 
-                        peer_id: reporterId, 
-                        message: spamMsg + `\n\n😈 Вы отправлены в ЧС на 1 день.`, 
-                        keyboard: banKb.toString(), 
-                        random_id: Math.floor(Math.random()*1000000000) 
-                    });
+                    const banKb = Keyboard.builder().inline().urlButton({ label: 'Обжалование', url: `https://vk.ru/topic-243089386_69303056` });
+                    await vk.api.messages.send({ peer_id: reporterId, message: spamMsg + `\n\n😈 Вы в ЧС на 1 день.`, keyboard: banKb.toString(), random_id: 0 });
                 } catch(e){}
             } else {
-                // Просто выдаем предупреждение
                 await dbRun("REPLACE INTO warnings (user_id, count) VALUES (?, ?)", [String(reporterId), warns]);
-                
-                try {
-                    await vk.api.messages.send({ 
-                        peer_id: reporterId, 
-                        message: spamMsg, 
-                        random_id: Math.floor(Math.random()*1000000000) 
-                    });
-                } catch(e){}
+                try { await vk.api.messages.send({ peer_id: reporterId, message: spamMsg, random_id: 0 }); } catch(e){}
             }
             
-            // Закрываем репорт
             await dbRun("UPDATE reports SET status = 'closed' WHERE id = ?", [payload.report_id]);
-            
             await safeAnswer({ type: 'show_snackbar', text: 'Репорт отклонен (Спам)' });
-            
-            return await vk.api.messages.edit({ 
-                peer_id: peerId, 
-                message: `🚫 Репорт отклонен как Спам.`, 
-                keyboard: "", 
-                conversation_message_id: context.conversationMessageId 
-            });
+            return await vk.api.messages.edit({ peer_id: peerId, message: `🚫 Репорт отклонен как Спам.`, keyboard: "", conversation_message_id: context.conversationMessageId });
         }
 
-        // ================= ОЦЕНКА РЕПОРТА (ИГРОК) =================
+        // --- ОЦЕНКА РЕПОРТА (ФИКС 5-10 ХОРОШО) ---
         if (payload.cmd === 'report_rate_start') {
             const report = await dbGet("SELECT * FROM reports WHERE id = ?", [payload.report_id]);
-            
-            if (!report) {
-                return await safeAnswer({ type: 'show_snackbar', text: '❌ Ошибка.' });
-            }
-            
-            if (String(userId) !== report.reporter_id) {
-                return await safeAnswer({ type: 'show_snackbar', text: '❌ Это не ваш репорт.' });
-            }
-            
-            if (report.rating > 0) {
-                return await safeAnswer({ type: 'show_snackbar', text: '❌ Вы уже оценили.' });
-            }
+            if (!report) return await safeAnswer({ type: 'show_snackbar', text: '❌ Ошибка.' });
+            if (String(userId) !== report.reporter_id) return await safeAnswer({ type: 'show_snackbar', text: '❌ Не ваш репорт.' });
+            if (report.rating > 0) return await safeAnswer({ type: 'show_snackbar', text: '❌ Уже оценено.' });
 
             await safeAnswer();
-            
-            // Запоминаем состояние, что игрок вводит оценку
             adminStates.set(userId, `rating_${report.id}`);
-            
-            return await vk.api.messages.send({
-                peer_id: peerId,
-                message: `⭐ Оцените работу администратора!\nНапишите оценку от 1 до 10 одним числом:`,
-                random_id: Math.floor(Math.random() * 1000000000)
-            });
+            return await vk.api.messages.send({ peer_id: peerId, message: `⭐ Оценка от 1 до 10:\n(1-4 = Плохо, 5-10 = Хорошо)`, random_id: 0 });
         }
 
         if (payload.cmd === 'report_bad_reason') {
             const report = await dbGet("SELECT * FROM reports WHERE id = ?", [payload.report_id]);
-            
-            if (!report || report.rating > 0) {
-                return await safeAnswer({ type: 'show_snackbar', text: '❌ Уже оценено.' });
-            }
-
-            // Сохраняем причину и закрываем
+            if (!report || report.rating > 0) return await safeAnswer({ type: 'show_snackbar', text: '❌ Уже оценено.' });
             await dbRun("UPDATE reports SET status = 'closed', rate_reason = ? WHERE id = ?", [payload.reason, payload.report_id]);
             await safeAnswer({ type: 'show_snackbar', text: 'Жалоба отправлена.' });
-            
-            // Отправляем уведомление админу, что игрок недоволен
-            try {
-                await vk.api.messages.send({ 
-                    peer_id: ADMIN_ID, 
-                    message: `⚠️ Отзыв по репорту #${report.id}!\n👤 Игрок: [id${report.reporter_id}|Игрок]\n📊 Оценка: Недоволен\n💬 Причина: ${payload.reason}`, 
-                    random_id: Math.floor(Math.random() * 1000000000) 
-                });
-            } catch(e) {}
+            try { await vk.api.messages.send({ peer_id: ADMIN_ID, message: `⚠️ Плохая оценка репорта #${report.id}!\nИгрок: [id${report.reporter_id}|Игрок]\nПричина: ${payload.reason}`, random_id: 0 }); } catch(e) {}
+            return await vk.api.messages.edit({ peer_id: peerId, message: `🙏 Спасибо за отзыв!\nЗафиксировано: ${payload.reason}.`, keyboard: "", conversation_message_id: context.conversationMessageId });
+        }
 
-            return await vk.api.messages.edit({
-                peer_id: peerId, 
-                message: `🙏 Спасибо за ваш ответ!\nМы зафиксировали: ${payload.reason}.\nРепорт закрыт.`, 
-                keyboard: "", 
-                conversation_message_id: context.conversationMessageId
-            });
+        // НОВЫЕ КНОПКИ ДЛЯ ХОРОШЕЙ ОЦЕНКИ
+        if (payload.cmd === 'report_good_reason') {
+            const report = await dbGet("SELECT * FROM reports WHERE id = ?", [payload.report_id]);
+            if (!report || report.rating > 0) return await safeAnswer({ type: 'show_snackbar', text: '❌ Уже оценено.' });
+            await dbRun("UPDATE reports SET status = 'closed', rate_reason = ? WHERE id = ?", [payload.reason, payload.report_id]);
+            await safeAnswer({ type: 'show_snackbar', text: 'Спасибо за хорошую оценку!' });
+            try { await vk.api.messages.send({ peer_id: ADMIN_ID, message: `🌟 Хорошая оценка репорта #${report.id}!\nИгрок: [id${report.reporter_id}|Игрок]\nПлюс: ${payload.reason}`, random_id: 0 }); } catch(e) {}
+            return await vk.api.messages.edit({ peer_id: peerId, message: `✅ Спасибо!\nМы рады, что помогли. Репорт закрыт.`, keyboard: "", conversation_message_id: context.conversationMessageId });
         }
 
         if (payload.cmd === 'report_close') {
             const report = await dbGet("SELECT * FROM reports WHERE id = ?", [payload.report_id]);
-            
-            if (!report) {
-                return await safeAnswer({ type: 'show_snackbar', text: '❌ Ошибка.' });
-            }
-            
+            if (!report) return await safeAnswer({ type: 'show_snackbar', text: '❌ Ошибка.' });
             await dbRun("UPDATE reports SET status = 'closed' WHERE id = ?", [payload.report_id]);
             await safeAnswer({ type: 'show_snackbar', text: 'Репорт закрыт.' });
-            
-            return await vk.api.messages.edit({
-                peer_id: peerId, 
-                message: `✅ Вы закрыли репорт. Спасибо за обращение!`, 
-                keyboard: "", 
-                conversation_message_id: context.conversationMessageId
-            });
+            return await vk.api.messages.edit({ peer_id: peerId, message: `✅ Репорт закрыт. Спасибо!`, keyboard: "", conversation_message_id: context.conversationMessageId });
         }
 
-        // ================= СИСТЕМА ДОЛГОВ =================
+        // ================= ВЫЗОВ АДМИНА (/admin) =================
+        if (payload.cmd === 'admin_call_accept') {
+            if (userId !== ADMIN_ID) return await safeAnswer({ type: 'show_snackbar', text: '❌ Только владелец.' });
+            
+            const reporterId = payload.reporter_id;
+            const targetId = payload.target_id;
+            const text = payload.text || "Нарушение правил";
+            
+            try {
+                // Отправляем уведомление вызвавшему админа
+                await vk.api.messages.send({ peer_id: Number(reporterId), message: `✅ Ваша жалоба на [id${targetId}|Игрока] принята администрацией.`, random_id: 0 });
+                
+                // Отправляем предупреждение нарушителю
+                await vk.api.messages.send({ peer_id: Number(targetId), message: `🚨 НА ВАС ПОДАЛИ ЖАЛОБУ!\n\nАдминистратор принял жалобу.\nПожалуйста, соблюдайте правила беседы.`, random_id: 0 });
+            } catch(e) {}
+            
+            await safeAnswer({ type: 'show_snackbar', text: '✅ Жалоба принята.' });
+            return await vk.api.messages.edit({ peer_id: peerId, message: `✅ Жалоба принята. Уведомления отправлены.`, keyboard: "", conversation_message_id: context.conversationMessageId });
+        }
+
+        if (payload.cmd === 'admin_call_spam') {
+            if (userId !== ADMIN_ID) return await safeAnswer({ type: 'show_snackbar', text: '❌ Только владелец.' });
+            const reporterId = payload.reporter_id;
+            
+            const w = await dbGet("SELECT count FROM warnings WHERE user_id = ?", [String(reporterId)]);
+            let warns = w ? w.count + 1 : 1;
+            
+            const spamMsg = `❌ ВАШ ВЫЗОВ АДМИНА ОТКЛОНЕН!\nПричина: СПАМ/ФЛУД.\nСчет: ${warns}/3.\n⚠️ При 3 предупреждениях — ЧС бота!`;
+
+            if (warns >= 3) {
+                await dbRun("REPLACE INTO blacklist (user_id, reason, until) VALUES (?, ?, ?)", [String(reporterId), "Спам вызовов админа (3/3)", Date.now() + 86400000]); 
+                await dbRun("DELETE FROM warnings WHERE user_id = ?", [String(reporterId)]);
+                try {
+                    const banKb = Keyboard.builder().inline().urlButton({ label: 'Обжалование', url: `https://vk.ru/topic-243089386_69303056` });
+                    await vk.api.messages.send({ peer_id: Number(reporterId), message: spamMsg + `\n\n😈 Вы в ЧС на 1 день.`, keyboard: banKb.toString(), random_id: 0 });
+                } catch(e){}
+            } else {
+                await dbRun("REPLACE INTO warnings (user_id, count) VALUES (?, ?)", [String(reporterId), warns]);
+                try { await vk.api.messages.send({ peer_id: Number(reporterId), message: spamMsg, random_id: 0 }); } catch(e){}
+            }
+            
+            await safeAnswer({ type: 'show_snackbar', text: 'Вызов отмечен как спам.' });
+            return await vk.api.messages.edit({ peer_id: peerId, message: `🚫 Вызов отклонен (Спам).`, keyboard: "", conversation_message_id: context.conversationMessageId });
+        }
+
+        // ================= ДОЛГИ =================
         if (payload.cmd === 'debt_accept') {
             const debt = await dbGet("SELECT * FROM debts WHERE id = ?", [payload.debt_id]);
-            
-            if (!debt || debt.status !== 'pending') {
-                return await safeAnswer({ type: 'show_snackbar', text: '❌ Заявка устарела.' });
-            }
-            
-            if (String(userId) !== debt.borrower) {
-                return await safeAnswer({ type: 'show_snackbar', text: '❌ Это не ваша заявка.' });
-            }
+            if (!debt || debt.status !== 'pending') return await safeAnswer({ type: 'show_snackbar', text: '❌ Заявка устарела.' });
+            if (String(userId) !== debt.borrower) return await safeAnswer({ type: 'show_snackbar', text: '❌ Не ваша заявка.' });
 
             await dbRun("UPDATE debts SET status = 'accepted' WHERE id = ?", [debt.id]);
             await updateBalance(userId, debt.amount);
             await safeAnswer({ type: 'show_snackbar', text: '✅ Долг принят!' });
-            
-            try { 
-                await vk.api.messages.send({ 
-                    peer_id: debt.lender, 
-                    message: `✅ Игрок [id${userId}|Игрок] принял ваш долг на ${formatMoney(debt.amount)}$.`, 
-                    random_id: Math.floor(Math.random()*1000000000) 
-                }); 
-            } catch(e) {}
-            
-            return await vk.api.messages.edit({
-                peer_id: peerId, 
-                message: `🤝 Долг принят! Вы получили ${formatMoney(debt.amount)}$. Не забудьте вернуть через ${debt.days} дн.`, 
-                keyboard: "", 
-                conversation_message_id: context.conversationMessageId
-            });
+            try { await vk.api.messages.send({ peer_id: debt.lender, message: `✅ [id${userId}|Игрок] принял долг ${formatMoney(debt.amount)}$.`, random_id: 0 }); } catch(e) {}
+            return await vk.api.messages.edit({ peer_id: peerId, message: `🤝 Долг принят! +${formatMoney(debt.amount)}$. Верните через ${debt.days} дн.`, keyboard: "", conversation_message_id: context.conversationMessageId });
         }
 
         if (payload.cmd === 'debt_decline') {
             const debt = await dbGet("SELECT * FROM debts WHERE id = ?", [payload.debt_id]);
-            
-            if (!debt || debt.status !== 'pending') {
-                return await safeAnswer({ type: 'show_snackbar', text: '❌ Заявка устарела.' });
-            }
-            
-            if (String(userId) !== debt.borrower) {
-                return await safeAnswer({ type: 'show_snackbar', text: '❌ Это не ваша заявка.' });
-            }
+            if (!debt || debt.status !== 'pending') return await safeAnswer({ type: 'show_snackbar', text: '❌ Заявка устарела.' });
+            if (String(userId) !== debt.borrower) return await safeAnswer({ type: 'show_snackbar', text: '❌ Не ваша заявка.' });
 
             await dbRun("UPDATE debts SET status = 'declined' WHERE id = ?", [debt.id]);
-            await updateBalance(debt.lender, debt.amount); // Возврат денег
-            await safeAnswer({ type: 'show_snackbar', text: '❌ Отказано. Деньги вернулись отправителю.' });
-            
-            try { 
-                await vk.api.messages.send({ 
-                    peer_id: debt.lender, 
-                    message: `❌ Игрок [id${userId}|Игрок] отказался от долга. Деньги возвращены.`, 
-                    random_id: Math.floor(Math.random()*1000000000) 
-                }); 
-            } catch(e) {}
-
-            return await vk.api.messages.edit({
-                peer_id: peerId, 
-                message: `❌ Вы отказались от долга.`, 
-                keyboard: "", 
-                conversation_message_id: context.conversationMessageId
-            });
+            await updateBalance(debt.lender, debt.amount);
+            await safeAnswer({ type: 'show_snackbar', text: '❌ Отказано.' });
+            try { await vk.api.messages.send({ peer_id: debt.lender, message: `❌ [id${userId}|Игрок] отказался от долга.`, random_id: 0 }); } catch(e) {}
+            return await vk.api.messages.edit({ peer_id: peerId, message: `❌ Вы отказались от долга.`, keyboard: "", conversation_message_id: context.conversationMessageId });
         }
 
-        // ================= МАГАЗИН ОДЕЖДЫ =================
+        // ================= МАГАЗИН =================
         if (payload.cmd === 'shop_cat') {
-            const cat = payload.cat;
-            
-            // Список вещей по категориям
             const items = {
-                'hat': [ {n: 'Зеленая кепка', p: 5000, img: 'https://sun9-40.userapi.com/s/v1/ig2/NjVI-oWypORWXWSX6D7p537O9zXty6K8h4nYerGEy0bZTHcpbvFY_V1nCbVaWBtfVcte4MHBhJWG5Cbb-b5KaM3o.jpg?quality=95&as=32x22,48x34,72x50,108x76,160x112,240x168,277x194&from=bu&cs=277x0'} ],
-                'shirt': [ {n: 'Белая футболка', p: 3000, img: 'https://sun9-40.userapi.com/s/v1/ig2/NjVI-oWypORWXWSX6D7p537O9zXty6K8h4nYerGEy0bZTHcpbvFY_V1nCbVaWBtfVcte4MHBhJWG5Cbb-b5KaM3o.jpg?quality=95&as=32x22,48x34,72x50,108x76,160x112,240x168,277x194&from=bu&cs=277x0'} ],
-                'jeans': [ {n: 'Синие джинсы', p: 4000, img: 'https://sun9-40.userapi.com/s/v1/ig2/NjVI-oWypORWXWSX6D7p537O9zXty6K8h4nYerGEy0bZTHcpbvFY_V1nCbVaWBtfVcte4MHBhJWG5Cbb-b5KaM3o.jpg?quality=95&as=32x22,48x34,72x50,108x76,160x112,240x168,277x194&from=bu&cs=277x0'} ],
-                'shoes': [ {n: 'Кроссовки', p: 6000, img: 'https://sun9-40.userapi.com/s/v1/ig2/NjVI-oWypORWXWSX6D7p537O9zXty6K8h4nYerGEy0bZTHcpbvFY_V1nCbVaWBtfVcte4MHBhJWG5Cbb-b5KaM3o.jpg?quality=95&as=32x22,48x34,72x50,108x76,160x112,240x168,277x194&from=bu&cs=277x0'} ]
+                'hat': [{n:'Зеленая кепка', p:5000}], 'shirt': [{n:'Белая футболка', p:3000}],
+                'jeans': [{n:'Синие джинсы', p:4000}], 'shoes': [{n:'Кроссовки', p:6000}]
             };
-            
-            const list = items[cat] || [];
+            const list = items[payload.cat] || [];
             const kb = Keyboard.builder().inline();
-            
             for (const item of list) {
-                kb.callbackButton({ 
-                    label: `${item.n} (${formatShortMoney(item.p)}$)`, 
-                    payload: { cmd: 'shop_buy', item: item.n, price: item.p, img: item.img }, 
-                    color: Keyboard.POSITIVE_COLOR 
-                });
-                kb.row();
+                kb.callbackButton({ label: `${item.n} (${formatShortMoney(item.p)}$)`, payload: { cmd: 'shop_buy', item: item.n, price: item.p }, color: Keyboard.POSITIVE_COLOR }).row();
             }
-            
             kb.callbackButton({ label: '🔙 Назад', payload: { cmd: 'shop_back' }, color: Keyboard.SECONDARY_COLOR });
-            
             await safeAnswer();
-            return await vk.api.messages.edit({
-                peer_id: peerId, 
-                message: `🛒 Категория: ${cat}\nВыберите вещь для покупки:`, 
-                keyboard: kb.toString(), 
-                conversation_message_id: context.conversationMessageId
-            });
+            return await vk.api.messages.edit({ peer_id: peerId, message: `🛒 ${payload.cat}:`, keyboard: kb.toString(), conversation_message_id: context.conversationMessageId });
         }
 
         if (payload.cmd === 'shop_back') {
             await safeAnswer();
-            return await vk.api.messages.edit({
-                peer_id: peerId, 
-                message: "🛒 Магазин одежды. Выберите категорию:", 
-                keyboard: getShopKb(), 
-                conversation_message_id: context.conversationMessageId
-            });
+            return await vk.api.messages.edit({ peer_id: peerId, message: "🛒 Магазин:", keyboard: getShopKb(), conversation_message_id: context.conversationMessageId });
         }
 
         if (payload.cmd === 'shop_buy') {
-            const price = payload.price;
-            const bal = await getBalance(userId);
-            
-            if (bal < price) {
-                return await safeAnswer({ type: 'show_snackbar', text: '❌ Недостаточно средств!' });
-            }
-            
-            await updateBalance(userId, -price);
-            
-            // Обновляем ссылку на картинку в профиле
-            await dbRun("UPDATE users SET clothes = ? WHERE user_id = ?", [payload.img, String(userId)]);
-            
-            return await safeAnswer({ type: 'show_snackbar', text: '✅ Куплено! Фото в профиле обновлено.' });
+            if (await getBalance(userId) < payload.price) return await safeAnswer({ type: 'show_snackbar', text: '❌ Мало денег!' });
+            await updateBalance(userId, -payload.price);
+            await dbRun("UPDATE users SET clothes = '1' WHERE user_id = ?", [String(userId)]);
+            return await safeAnswer({ type: 'show_snackbar', text: '✅ Куплено!' });
         }
 
-        // ================= БИЗНЕС КНОПКИ =================
+        // ================= БИЗНЕС =================
         if (payload.cmd === 'biz_withdraw') {
-            // Защита от нажатия чужих кнопок
-            if (String(userId) !== String(payload.author)) {
-                return await safeAnswer({ type: 'show_snackbar', text: '❌ Это меню вызвано другим пользователем.' });
-            }
-            
+            if (String(userId) !== String(payload.author)) return await safeAnswer({ type: 'show_snackbar', text: '❌ Чужое меню.' });
             const biz = await dbGet("SELECT * FROM businesses WHERE user_id = ?", [String(userId)]);
-            
-            if (!biz) {
-                return await safeAnswer({ type: 'show_snackbar', text: '❌ У вас нет бизнеса' });
-            }
+            if (!biz) return await safeAnswer({ type: 'show_snackbar', text: '❌ Нет бизнеса.' });
             
             const now = Date.now();
-            const lastWithdraw = Number(biz.last_withdraw) || 0;
-            const cd = 3600000; // 1 час (3600000 мс)
-
-            // Проверка кулдауна на вывод
-            if (now - lastWithdraw < cd) {
-                const remaining = cd - (now - lastWithdraw);
-                const m = Math.floor(remaining / 60000);
-                return await safeAnswer({ type: 'show_snackbar', text: `⏳ Ждите ${m} мин.` });
-            }
+            if (now - biz.last_withdraw < 3600000) return await safeAnswer({ type: 'show_snackbar', text: `⏳ Ждите ${Math.floor((3600000 - (now - biz.last_withdraw))/60000)} мин.` });
 
             const bizData = Object.values(BIZ_DATA).find(b => b.name === biz.biz_name) || { baseIncome: 1000 };
             const earned = Math.floor((now - biz.last_income) * ((bizData.baseIncome * biz.level) / 180000));
             const total = Number(biz.balance) + earned;
-            
-            // Если нечего выводить
-            if (total <= 0) {
-                return await safeAnswer({ type: 'show_snackbar', text: '❌ Недостаточно средств в бизнесе.' });
-            }
-            
+            if (total <= 0) return await safeAnswer({ type: 'show_snackbar', text: '❌ Пусто.' });
+
             await updateBalance(userId, total);
             await dbRun("UPDATE businesses SET balance = 0, last_income = ?, last_withdraw = ? WHERE user_id = ?", [now, now, String(userId)]);
             await safeAnswer({ type: 'show_snackbar', text: `✅ Выведено ${formatMoney(total)}$!` });
-            
-            return await vk.api.messages.edit({
-                peer_id: peerId,
-                message: `🏢 Бизнес\n\n💸 На балансе: 0$\n\nВы вывели: ${formatMoney(total)}$`,
-                keyboard: getBizKb(userId),
-                conversation_message_id: context.conversationMessageId
-            });
+            return await vk.api.messages.edit({ peer_id: peerId, message: `🏢 Выведено: ${formatMoney(total)}$`, keyboard: getBizKb(userId), conversation_message_id: context.conversationMessageId });
         }
 
         if (payload.cmd === 'biz_upgrade') {
-            if (String(userId) !== String(payload.author)) {
-                return await safeAnswer({ type: 'show_snackbar', text: '❌ Это меню вызвано другим пользователем.' });
-            }
-            
+            if (String(userId) !== String(payload.author)) return await safeAnswer({ type: 'show_snackbar', text: '❌ Чужое меню.' });
             const biz = await dbGet("SELECT * FROM businesses WHERE user_id = ?", [String(userId)]);
-            
-            if (!biz) {
-                return await safeAnswer({ type: 'show_snackbar', text: '❌ У вас нет бизнеса.' });
-            }
-            
-            if (biz.level >= 5) {
-                return await safeAnswer({ type: 'show_snackbar', text: '❌ Максимальный уровень!' });
-            }
+            if (!biz || biz.level >= 5) return await safeAnswer({ type: 'show_snackbar', text: '❌ Макс уровень или нет бизнеса.' });
 
-            const bizData = Object.values(BIZ_DATA).find(b => b.name === biz.biz_name) || { baseIncome: 1000 };
-            const earned = Math.floor((Date.now() - biz.last_income) * ((bizData.baseIncome * biz.level) / 180000));
-            const totalBalance = Number(biz.balance) + earned;
-            const nextLevelCost = (Number(biz.level) === 1 ? 2000000 : Number(biz.level) === 2 ? 5000000 : Number(biz.level) * 5000000);
+            const cost = biz.level * 5000000;
+            if (await getBalance(userId) < cost) return await safeAnswer({ type: 'show_snackbar', text: '❌ Мало денег.' });
 
-            const userBal = await getBalance(userId);
-            
-            if (userBal < nextLevelCost) {
-                return await safeAnswer({ type: 'show_snackbar', text: '❌ Не хватает денег на балансе!' });
-            }
-
+            await updateBalance(userId, -cost);
+            await dbRun("UPDATE businesses SET level = level + 1 WHERE user_id = ?", [String(userId)]);
             await safeAnswer();
-            await updateBalance(userId, -nextLevelCost);
-            await dbRun("UPDATE businesses SET level = level + 1, balance = ?, last_income = ? WHERE user_id = ?", [totalBalance, Date.now(), String(userId)]);
-            
-            const newMsgText = `🏢 Бизнес ${await getFullName(userId)}\n${biz.biz_name}\n\n💪 Уровень: ${biz.level + 1}/5\n🐱 ${formatMoney(bizData.baseIncome * (biz.level + 1) * 20)}$/час\n💸 На балансе: ${formatMoney(totalBalance)}$\n\nПовышение уровня стоит: ${formatMoney((biz.level + 1) * 5000000)}$\n\n👉 Чтобы вывести деньги, напишите в чат вывести`;
-            
-            return await vk.api.messages.edit({ 
-                peer_id: peerId, 
-                message: newMsgText, 
-                keyboard: getBizKb(userId), 
-                disable_mentions: 1, 
-                conversation_message_id: context.conversationMessageId
-            });
+            return await vk.api.messages.edit({ peer_id: peerId, message: `🏢 Уровень повышен! Теперь ${biz.level + 1}/5`, keyboard: getBizKb(userId), conversation_message_id: context.conversationMessageId });
+        }
+        
+        // Кнопка слива бизнеса
+        if (payload.cmd === 'biz_sell') {
+             if (String(userId) !== String(payload.author)) return await safeAnswer({ type: 'show_snackbar', text: '❌ Чужое меню.' });
+             const biz = await dbGet("SELECT * FROM businesses WHERE user_id = ?", [String(userId)]);
+             if (!biz) return await safeAnswer({ type: 'show_snackbar', text: '❌ Нет бизнеса.' });
+             
+             await updateBalance(userId, 10000000);
+             await dbRun("DELETE FROM businesses WHERE user_id = ?", [String(userId)]);
+             await safeAnswer({ type: 'show_snackbar', text: '🔥 Бизнес слит! +10кк' });
+             return await vk.api.messages.edit({ peer_id: peerId, message: `🔥 Вы слили бизнес за 10,000,000$!`, keyboard: "", conversation_message_id: context.conversationMessageId });
         }
 
-        // ================= РАБОТА КНОПКИ =================
+        // ================= РАБОТА =================
         if (payload.cmd === 'work_do') {
             const now = Date.now();
             const workRow = await dbGet("SELECT count, last_reset FROM work_cd WHERE user_id = ?", [String(userId)]);
-            
             let count = workRow ? Number(workRow.count) : 0;
             let lastReset = workRow ? Number(workRow.last_reset) : 0;
 
-            // Сброс счетчика раз в час
-            if (now - lastReset >= 3600000) { 
-                count = 0; 
-                lastReset = now; 
-            }
-            
-            // Лимит 3 работы в час
-            if (count >= 3) {
-                const remaining = 3600000 - (now - lastReset);
-                const m = Math.floor(remaining / 60000);
-                const s = Math.floor((remaining % 60000) / 1000);
-                return await safeAnswer({ type: 'show_snackbar', text: `⏳ Ждите ${m} мин. ${s} сек.` });
-            }
+            if (now - lastReset >= 3600000) { count = 0; lastReset = now; }
+            if (count >= 3) return await safeAnswer({ type: 'show_snackbar', text: `⏳ Лимит работ (3/ч). Ждите.` });
 
-            // Для такси нужна машина
             if (payload.type === 'Такси') {
-                const userRow = await dbGet("SELECT cars FROM users WHERE user_id = ?", [String(userId)]);
-                const carsArr = JSON.parse(userRow?.cars || '[]');
-                
-                if (carsArr.length === 0) {
-                    return await safeAnswer({ type: 'show_snackbar', text: '❌ Для работы в такси нужна машина! Купите её в разделе машины' });
-                }
+                const u = await dbGet("SELECT cars FROM users WHERE user_id = ?", [String(userId)]);
+                if (JSON.parse(u?.cars || '[]').length === 0) return await safeAnswer({ type: 'show_snackbar', text: '❌ Нужна машина для такси.' });
             }
 
             await safeAnswer();
             count++;
             await dbRun("REPLACE INTO work_cd (user_id, count, last_reset) VALUES (?, ?, ?)", [String(userId), count, lastReset]);
-
-            // Зарплата от 1000 до 7000
             const earned = Math.floor(Math.random() * 6000) + 1000;
             await updateBalance(userId, earned);
-            const newBal = await getBalance(userId);
-            
-            return await vk.api.messages.edit({ 
-                peer_id: peerId, 
-                message: `✅ Вы успешно поработали (${payload.type}) и заработали ${formatMoney(earned)}$!\n\n💰 Ваш баланс: ${formatMoney(newBal)}$\n📊 Осталось попыток: ${3 - count}/3`, 
-                keyboard: getWorkKb(), 
-                conversation_message_id: context.conversationMessageId
-            });
+            return await vk.api.messages.edit({ peer_id: peerId, message: `✅ Работа (${payload.type}): +${formatMoney(earned)}$\nОсталось: ${3-count}/3`, keyboard: getWorkKb(), conversation_message_id: context.conversationMessageId });
         }
 
-        // ================= АКТИВАЦИЯ БОТА =================
-        if (payload.cmd === 'activate_bot' || payload.cmd === 'decline_bot') {
-            await safeAnswer();
-            
-            try {
-                const members = await vk.api.messages.getConversationMembers({ peer_id: peerId });
-                const clicker = members.items.find(m => m.member_id === userId);
-                const isClickerAdmin = clicker && (clicker.is_admin || clicker.is_owner);
-                
-                if (!isClickerAdmin && userId !== ADMIN_ID) {
-                    return await vk.api.messages.edit({ 
-                        peer_id: peerId, 
-                        message: "❌ Только администраторы беседы могут это сделать!", 
-                        keyboard: "", 
-                        conversation_message_id: context.conversationMessageId 
-                    });
-                }
-
-                if (payload.cmd === 'activate_bot') {
-                    return await vk.api.messages.edit({ 
-                        peer_id: peerId, 
-                        message: "🎉 Вы подключили бота к беседе!\nЧтобы узнать подробности напишите help", 
-                        disable_mentions: 1, 
-                        keyboard: "", 
-                        conversation_message_id: context.conversationMessageId 
-                    });
-                } else {
-                    return await vk.api.messages.edit({ 
-                        peer_id: peerId, 
-                        message: "❌ Активация отменена.", 
-                        disable_mentions: 1, 
-                        keyboard: "", 
-                        conversation_message_id: context.conversationMessageId 
-                    });
-                }
-            } catch (e) {
-                return await vk.api.messages.edit({ 
-                    peer_id: peerId, 
-                    message: "❌ Ошибка при проверке прав.", 
-                    keyboard: "", 
-                    conversation_message_id: context.conversationMessageId 
-                });
-            }
-        }
-
-        // ================= ХЕЛП МЕНЮ =================
+        // ================= HELP (ЗИМНИЙ РАЗДЕЛ) =================
         if (payload.cmd === 'help_start') {
             await safeAnswer();
-            return await vk.api.messages.edit({
-                peer_id: peerId, 
-                message: "📖 Выберите раздел с командами:", 
-                keyboard: getHelpKb(), 
-                conversation_message_id: context.conversationMessageId
-            });
+            return await vk.api.messages.edit({ peer_id: peerId, message: "📖 Разделы:", keyboard: getHelpKb(), conversation_message_id: context.conversationMessageId });
         }
 
         if (payload.cmd === 'help_menu') {
             await safeAnswer();
             let msg = "";
-            
-            if (payload.section === 'games') msg = "🎰 Игровые команды (без слэша):\nрулетка [цвет/чет] [ставка]\nкраш [автостоп] [ставка]\nмонетка [орел/решка] [ставка]\nстакан [1-3] [ставка]\nкубик [1-6] [ставка]\nавтомат [ставка]\nблэкджек [ставка]\nдрим [1-5] [ставка]\nмины [ставка]\nфортуна\n\n⚠️ Мин. ставка: 100$. Ставка 'все' разрешена.";
-            if (payload.section === 'eco') msg = "💼 Экономика:\nбизнес\nкупитьбиз [название]\nмойбизнес\nвывести\nбонус\ntransfer [сумма] (ответом)\nduel [сумма]\npromo [код]\nпромолист\nмашины\nкупить машина [название]\nsellcar (слить машину)\nдон дом\nдон гараж\nдатьдолг [сумма] [дней] (ответом)\nкупитьсим\nслитьсим";
-            if (payload.section === 'profile') msg = "👤 Профиль и прочее:\nпрофиль\nтоп\nrep +/- (ответом или @ник)\nпинг\npremium\nмагаз вещей\n\n💡 Слэш (/) писать необязательно!";
-            if (payload.section === 'reports') msg = "📩 Система жалоб:\nreport [текст] - Пожаловаться админу (в ЛС или беседе)\nадмин - Вызвать админа (ответом на сообщение)";
-            if (payload.section === 'org') msg = "🏛️ Организации и Страны:\nорганизации (Список)\nвступить [Название]\nстраны (Список)\nстрана [Название]";
+            if (payload.section === 'games') msg = "🎰 Игры:\nрулетка, краш, монетка, стакан, кубик, автомат, блэкджек, дрим, мины, фортуна";
+            if (payload.section === 'eco') msg = "💼 Экономика:\nбизнес, купитьбиз, мойбизнес, вывести, слитьбиз, бонус, transfer, duel, promo, машины, купить машина, sellcar, датьдолг, купитьсим";
+            if (payload.section === 'profile') msg = "👤 Профиль:\nпрофиль, топ, rep +/-, пинг, premium, магаз вещей";
+            if (payload.section === 'reports') msg = "📩 Жалобы:\nreport [текст], админ (ответом)";
+            if (payload.section === 'org') msg = "🏛️ Орг/Страны:\nорганизации, вступить, страны, страна";
             
             if (payload.section === 'winter') {
                 msg = "❄️ ЗИМНИЕ КОМАНДЫ ❄️\n\n" +
-                      "🎮 Игры:\n" +
-                      "▪️ снежки - Игра в снежки (шанс выигрыша)\n" +
-                      "▪️ елка - Потрясти новогоднюю елку\n" +
-                      "▪️ санки - Гонки на санках\n\n" +
+                      "🎮 Игры (лимит 10 раз):\n" +
+                      "▪️ снежки - Бросить снежок\n" +
+                      "▪️ елка - Потрясти елку\n" +
+                      "▪️ санки - Катание на санках\n" +
+                      "▪️ снеговик - Слепить снеговика\n" +
+                      "▪️ подарок - Найти подарок\n\n" +
                       "🎁 Ивент:\n" +
-                      "▪️ event - Зимний ивент (выполни задания и получи кейс)\n" +
-                      "▪️ открыть кейс зимний - Открыть полученный кейс";
+                      "▪️ event - Зимний ивент\n" +
+                      "▪️ открыть кейс зимний - Открыть награду";
             }
 
             if (payload.section === 'houses') {
-                let txt = "🏠 ДОМА\n────────────────────\n";
-                for (const [key, data] of Object.entries(PROPERTY_DATA)) {
-                    const countRow = await dbGet("SELECT COUNT(*) as c FROM properties WHERE location = ? AND type = 'house'", [data.name]);
-                    txt += `📍 ${data.name} (${countRow.c}/20)\n└ Свободно мест: ${20 - countRow.c}\n`;
+                let txt = "🏠 ДОМА\n";
+                for (const [k, d] of Object.entries(PROPERTY_DATA)) {
+                    const c = await dbGet("SELECT COUNT(*) as c FROM properties WHERE location = ? AND type = 'house'", [d.name]);
+                    txt += `📍 ${d.name} (${c.c}/20)\n`;
                 }
-                txt += `\n💡 Купить: купить дом топ [номер] [Локация]\n💡 Продать: продать дом [сумма] (ответом)\n🏆 Доны: дон дом`;
-                msg = txt;
+                msg = txt + "\n💡 купить дом топ [№] [Локация]";
             }
             
             if (payload.section === 'garages') {
-                let txt = "🏘️ ГАРАЖИ\n────────────────────\n";
-                for (const [key, data] of Object.entries(PROPERTY_DATA)) {
-                    const countRow = await dbGet("SELECT COUNT(*) as c FROM properties WHERE location = ? AND type = 'garage'", [data.name]);
-                    txt += `📍 ${data.name} (${countRow.c}/20)\n└ Свободно мест: ${20 - countRow.c}\n`;
+                let txt = "🏘️ ГАРАЖИ\n";
+                for (const [k, d] of Object.entries(PROPERTY_DATA)) {
+                    const c = await dbGet("SELECT COUNT(*) as c FROM properties WHERE location = ? AND type = 'garage'", [d.name]);
+                    txt += `📍 ${d.name} (${c.c}/20)\n`;
                 }
-                txt += `\n💡 Купить: купить гараж топ [номер] [Локация]\n💡 Продать: продать гараж [сумма] (ответом)\n🏆 Доны: дон гараж`;
-                msg = txt;
+                msg = txt + "\n💡 купить гараж топ [№] [Локация]";
             }
             
-            return await vk.api.messages.edit({ 
-                peer_id: peerId, 
-                message: msg, 
-                keyboard: getHelpBackKb(), 
-                conversation_message_id: context.conversationMessageId 
-            });
+            return await vk.api.messages.edit({ peer_id: peerId, message: msg, keyboard: getHelpBackKb(), conversation_message_id: context.conversationMessageId });
         }
 
-        // ================= ТОП (С ЗАЩИТОЙ ОТ ЧУЖИХ КНОПОК) =================
+        // ================= ТОП (ФИКС ФИЛЬТРАЦИИ) =================
         if (payload.cmd === 'top_menu' || payload.cmd === 'top_back') {
-            if (String(userId) !== String(payload.author)) {
-                return await safeAnswer({ type: 'show_snackbar', text: '❌ Меню вызвано другим пользователем!' });
-            }
+            if (String(userId) !== String(payload.author)) return await safeAnswer({ type: 'show_snackbar', text: '❌ Чужое меню!' });
             
             const type = payload.type || 'coins';
             const scope = payload.scope || 'chat';
             const repType = payload.repType || 'pos';
 
             let orderBy = "balance DESC", filter = "balance > 0";
-            
-            if (type === 'level') { orderBy = "level DESC, xp DESC"; }
-            if (type === 'duels') { orderBy = "duel_wins DESC"; }
-            if (type === 'bonus') { orderBy = "bonus_count DESC"; }
+            if (type === 'level') orderBy = "level DESC, xp DESC";
+            if (type === 'duels') orderBy = "duel_wins DESC";
+            if (type === 'bonus') orderBy = "bonus_count DESC";
             if (type === 'rep') { 
                 orderBy = repType === 'pos' ? "reputation DESC" : "reputation ASC"; 
                 filter = repType === 'pos' ? "reputation > 0" : "reputation < 0"; 
             }
 
             let rows = [];
-            
             if (scope === 'global') {
-                rows = await dbAll(`SELECT user_id, balance, level, reputation FROM users WHERE ${filter} ORDER BY ${orderBy} LIMIT 10`);
+                rows = await dbAll(`SELECT user_id, balance, level, reputation, duel_wins, bonus_count FROM users WHERE ${filter} ORDER BY ${orderBy} LIMIT 10`);
             } else {
-                // Только те, кто есть в беседе (писал сообщения)
-                rows = await dbAll(`SELECT u.user_id, u.balance, u.level, u.reputation FROM users u JOIN chat_messages c ON u.user_id = c.user_id WHERE c.peer_id = ? AND ${filter} ORDER BY ${orderBy} LIMIT 10`, [String(context.peerId)]);
+                // ТОЛЬКО ТЕ, КТО ЕСТЬ В БЕСЕДЕ
+                rows = await dbAll(`SELECT u.user_id, u.balance, u.level, u.reputation, u.duel_wins, u.bonus_count FROM users u INNER JOIN chat_messages c ON u.user_id = c.user_id WHERE c.peer_id = ? AND ${filter} ORDER BY ${orderBy} LIMIT 10`, [String(context.peerId)]);
             }
 
             let title = `🏆 ТОП 10 (${scope === 'global' ? 'Общий' : 'В беседе'})\n\n`;
@@ -2614,35 +2559,28 @@ vk.updates.on('message_event', async (context) => {
             
             for (const r of rows) {
                 const name = await getFullName(r.user_id);
-                let val = type === 'coins' ? `${formatShortMoney(r.balance)}$` : (type === 'level' ? `Ур.${r.level}` : r.reputation);
+                let val = "0";
+                if (type === 'coins') val = formatShortMoney(r.balance) + '$';
+                else if (type === 'level') val = `Ур.${r.level}`;
+                else if (type === 'duels') val = r.duel_wins || 0;
+                else if (type === 'bonus') val = r.bonus_count || 0;
+                else if (type === 'rep') val = r.reputation || 0;
+                
                 title += `${emojis[count]} ${name} — ${val}\n`;
                 count++;
             }
-            
             if (rows.length === 0) title += "Пусто...";
 
             await safeAnswer();
-            return await vk.api.messages.edit({
-                peer_id: peerId, 
-                message: title, 
-                keyboard: getTopKb(payload.author, type, scope, repType), 
-                conversation_message_id: context.conversationMessageId
-            });
+            return await vk.api.messages.edit({ peer_id: peerId, message: title, keyboard: getTopKb(payload.author, type, scope, repType), conversation_message_id: context.conversationMessageId });
         }
 
         // ================= ДУЭЛЬ =================
         if (payload.cmd === 'duel_accept') {
-            const duelId = payload.duel_id;
-            const row = await dbGet("SELECT challenger, bet FROM active_duels WHERE msg_id = ?", [duelId]);
-            
+            const row = await dbGet("SELECT challenger, bet FROM active_duels WHERE msg_id = ?", [payload.duel_id]);
             if (row) {
-                if (String(userId) === row.challenger) {
-                    return await safeAnswer({ type: 'show_snackbar', text: '❌ Нельзя драться с собой!' });
-                }
-                
-                if (await getBalance(userId) < row.bet) {
-                    return await safeAnswer({ type: 'show_snackbar', text: '❌ Не хватает денег!' });
-                }
+                if (String(userId) === row.challenger) return await safeAnswer({ type: 'show_snackbar', text: '❌ С собой нельзя!' });
+                if (await getBalance(userId) < row.bet) return await safeAnswer({ type: 'show_snackbar', text: '❌ Мало денег!' });
                 
                 const winnerId = Math.random() < 0.5 ? parseInt(row.challenger) : userId;
                 const loserId = winnerId === userId ? parseInt(row.challenger) : userId;
@@ -2651,328 +2589,186 @@ vk.updates.on('message_event', async (context) => {
                 await updateBalance(winnerId, prize);
                 await updateBalance(loserId, -row.bet);
                 await dbRun("UPDATE users SET duel_wins = duel_wins + 1 WHERE user_id = ?", [String(winnerId)]);
-                await dbRun("DELETE FROM active_duels WHERE msg_id = ?", [duelId]);
+                await dbRun("DELETE FROM active_duels WHERE msg_id = ?", [payload.duel_id]);
                 
                 await safeAnswer();
-                return await vk.api.messages.edit({
-                    peer_id: peerId,
-                    message: `⚔️ Дуэль завершена!\n\n🏆 Победитель: ${await getFullName(winnerId)}\n❌ Проигравший: ${await getFullName(loserId)}\n\n💰 Выигрыш: ${prize}$`,
-                    keyboard: "", 
-                    disable_mentions: 1, 
-                    conversation_message_id: context.conversationMessageId
-                });
+                return await vk.api.messages.edit({ peer_id: peerId, message: `⚔️ Победа: ${await getFullName(winnerId)}\nПроигрыш: ${await getFullName(loserId)}\n💰 ${prize}$`, keyboard: "", disable_mentions: 1, conversation_message_id: context.conversationMessageId });
             }
         }
 
-        // ================= МИНЫ =================
+        // ================= МИНЫ (БЕЗ КД 60СЕК) =================
         if (payload.cmd === 'mines_set') {
-            const gameId = String(payload.gameId);
-            const count = Number(payload.count);
-            
-            const row = await dbGet("SELECT bet FROM games WHERE game_id = ? AND user_id = ?", [gameId, String(userId)]);
+            const row = await dbGet("SELECT bet FROM games WHERE game_id = ? AND user_id = ?", [String(payload.gameId), String(userId)]);
             if (!row) return await safeAnswer({ type: 'show_snackbar', text: '❌ Игра устарела.' });
 
             const minesArr = [];
-            while(minesArr.length < count) {
+            while(minesArr.length < Number(payload.count)) {
                 const r = Math.floor(Math.random() * 9) + 1;
                 if (!minesArr.includes(r)) minesArr.push(r);
             }
             
-            await dbRun("UPDATE games SET mines = ?, opened = '[]', multiplier = 1.0, start_time = ? WHERE game_id = ?", [JSON.stringify(minesArr), Date.now(), gameId]);
+            // Убираем start_time или ставим 0, чтобы не было таймера
+            await dbRun("UPDATE games SET mines = ?, opened = '[]', multiplier = 1.0, start_time = 0 WHERE game_id = ?", [JSON.stringify(minesArr), String(payload.gameId)]);
             
-            const name = await getFullName(userId);
-            const ui = getMinesGameUI(gameId, row.bet, count, minesArr, [], false, null, name, await getBalance(userId), 60);
-            
+            const ui = getMinesGameUI(String(payload.gameId), row.bet, Number(payload.count), minesArr, [], false, null, await getFullName(userId), await getBalance(userId), 0);
             await safeAnswer();
-            return await vk.api.messages.edit({ 
-                peer_id: peerId, 
-                message: ui.text, 
-                keyboard: ui.kb, 
-                conversation_message_id: context.conversationMessageId 
-            });
+            return await vk.api.messages.edit({ peer_id: peerId, message: ui.text, keyboard: ui.kb, conversation_message_id: context.conversationMessageId });
         }
 
         if (payload.cmd === 'mines_click') {
-            const gameId = String(payload.gameId);
-            const cell = Number(payload.cell);
-            
-            const row = await dbGet("SELECT bet, mines, opened, multiplier, start_time FROM games WHERE game_id = ? AND user_id = ?", [gameId, String(userId)]);
+            const row = await dbGet("SELECT bet, mines, opened, multiplier FROM games WHERE game_id = ? AND user_id = ?", [String(payload.gameId), String(userId)]);
             if (!row) return;
 
             const bet = row.bet;
             const mines = JSON.parse(row.mines);
             const opened = JSON.parse(row.opened);
-            const startTime = row.start_time;
+            const cell = Number(payload.cell);
 
-            if (Date.now() - startTime > 60000) {
-                await updateBalance(userId, -bet);
-                await dbRun("DELETE FROM games WHERE game_id = ?", [gameId]);
-                const ui = getMinesGameUI(gameId, bet, mines.length, mines, opened, true, null, await getFullName(userId), await getBalance(userId));
-                await safeAnswer();
-                return await vk.api.messages.edit({ 
-                    peer_id: peerId, 
-                    message: ui.text.replace('наступил(а) на мину!', 'не успел(а) открыть!'), 
-                    keyboard: ui.kb, 
-                    conversation_message_id: context.conversationMessageId 
-                });
-            }
-            
             if (opened.includes(cell)) return;
 
             opened.push(cell);
             let isLoss = false, hitCell = null, currentMoney = 0;
 
             if (mines.includes(cell)) {
-                isLoss = true;
-                hitCell = cell;
+                isLoss = true; hitCell = cell;
                 await updateBalance(userId, -bet);
-                await dbRun("DELETE FROM games WHERE game_id = ?", [gameId]);
+                await dbRun("DELETE FROM games WHERE game_id = ?", [String(payload.gameId)]);
             } else {
-                let currentMult = 1.0;
-                for (let i = 0; i < opened.length; i++) currentMult *= (9 - i) / (9 - mines.length - i);
-                currentMult = Math.round(currentMult * 0.95 * 100) / 100;
-                currentMoney = Math.floor(bet * currentMult);
+                let mult = 1.0;
+                for (let i = 0; i < opened.length; i++) mult *= (9 - i) / (9 - mines.length - i);
+                mult = Math.round(mult * 0.95 * 100) / 100;
+                currentMoney = Math.floor(bet * mult);
 
                 if (opened.length === (9 - mines.length)) {
                     await updateBalance(userId, currentMoney);
-                    await dbRun("DELETE FROM games WHERE game_id = ?", [gameId]);
-                    isLoss = true;
-                    hitCell = -1;
+                    await dbRun("DELETE FROM games WHERE game_id = ?", [String(payload.gameId)]);
+                    isLoss = true; hitCell = -1;
                 } else {
-                    await dbRun("UPDATE games SET opened = ?, multiplier = ? WHERE game_id = ?", [JSON.stringify(opened), currentMult, gameId]);
+                    await dbRun("UPDATE games SET opened = ?, multiplier = ? WHERE game_id = ?", [JSON.stringify(opened), mult, String(payload.gameId)]);
                 }
             }
 
             const balance = await getBalance(userId);
             const name = await getFullName(userId);
-
             await safeAnswer();
             
             if (isLoss) {
-                const ui = getMinesGameUI(gameId, bet, mines.length, mines, opened, true, hitCell, name, balance);
-                let text = ui.text;
-                
-                if (hitCell === -1) {
-                    text = `🏆 ПОБЕДА!\n👤 ${name}\n📈 Выигрыш: +${currentMoney}$\n💳 Баланс: ${formatMoney(balance)}$`;
-                }
-                
-                return await vk.api.messages.edit({ 
-                    peer_id: peerId, 
-                    message: text, 
-                    keyboard: ui.kb, 
-                    conversation_message_id: context.conversationMessageId 
-                });
+                const ui = getMinesGameUI(String(payload.gameId), bet, mines.length, mines, opened, true, hitCell, name, balance);
+                let text = hitCell === -1 ? `🏆 ПОБЕДА!\n+${currentMoney}$` : ui.text;
+                return await vk.api.messages.edit({ peer_id: peerId, message: text, keyboard: ui.kb, conversation_message_id: context.conversationMessageId });
             } else {
-                const ui = getMinesGameUI(gameId, bet, mines.length, mines, opened, false, null, name, balance);
-                const timeLeft = Math.max(0, Math.floor((60000 - (Date.now() - startTime)) / 1000));
-                
-                return await vk.api.messages.edit({ 
-                    peer_id: peerId, 
-                    message: ui.text.replace('{TIME}', timeLeft), 
-                    keyboard: ui.kb, 
-                    conversation_message_id: context.conversationMessageId 
-                });
+                const ui = getMinesGameUI(String(payload.gameId), bet, mines.length, mines, opened, false, null, name, balance, 0);
+                return await vk.api.messages.edit({ peer_id: peerId, message: ui.text, keyboard: ui.kb, conversation_message_id: context.conversationMessageId });
             }
         }
 
         if (payload.cmd === 'mines_cashout') {
-            const gameId = String(payload.gameId);
-            const row = await dbGet("SELECT bet, multiplier, mines, opened FROM games WHERE game_id = ? AND user_id = ?", [gameId, String(userId)]);
-            
+            const row = await dbGet("SELECT bet, multiplier, mines, opened FROM games WHERE game_id = ? AND user_id = ?", [String(payload.gameId), String(userId)]);
             if (!row) return;
-
             const opened = JSON.parse(row.opened);
             if (opened.length === 0) return; 
 
-            const winAmount = Math.floor(row.bet * row.multiplier);
-            
-            await updateBalance(userId, winAmount);
-            await dbRun("DELETE FROM games WHERE game_id = ?", [gameId]);
-            
+            const win = Math.floor(row.bet * row.multiplier);
+            await updateBalance(userId, win);
+            await dbRun("DELETE FROM games WHERE game_id = ?", [String(payload.gameId)]);
             await safeAnswer();
-            
-            return await vk.api.messages.edit({
-                peer_id: peerId,
-                message: `💰 ВЫВОД\n👤 ${await getFullName(userId)}\n💵 Забрал: ${winAmount} 💰 (x${row.multiplier})\n💳 Баланс: ${formatMoney(await getBalance(userId))} 💰`,
-                keyboard: buildMinesKb(gameId, opened, JSON.parse(row.mines), true, null),
-                conversation_message_id: context.conversationMessageId
-            });
+            return await vk.api.messages.edit({ peer_id: peerId, message: `💰 Забрано: ${win}$ (x${row.multiplier})\nБаланс: ${formatMoney(await getBalance(userId))}$`, keyboard: buildMinesKb(String(payload.gameId), opened, JSON.parse(row.mines), true, null), conversation_message_id: context.conversationMessageId });
         }
 
         await safeAnswer();
     } catch (e) {
-        console.error("КРИТИЧЕСКАЯ Ошибка в кнопках:", e);
-        await safeAnswer({ type: 'show_snackbar', text: '⚠️ Ошибка. Попробуйте позже.' });
+        console.error("Callback Error:", e);
+        await safeAnswer({ type: 'show_snackbar', text: '⚠️ Ошибка.' });
     }
 });
-// ===== ОБРАБОТКА ОЦЕНОК В ЛС (ЧИСЛА ОТ 1 ДО 10) =====
-// Этот обработчик ловит сообщения, чтобы понять, что игрок вводит оценку
+
+// ===== ОБРАБОТКА ОЦЕНОК (1-10) =====
 vk.updates.on('message_new', async (message, next) => {
-    // Если сообщение от бота или сообщества - пропускаем
-    if (message.isOutbox || message.senderId < 0) {
-        return next();
-    }
-    
-    // Получаем текст сообщения
+    if (message.isOutbox || message.senderId < 0) return next();
     const text = message.text ? message.text.trim() : '';
-    
-    // Если сообщение пустое или это не ЛС - передаем управление дальше (в основной обработчик)
-    if (!text || message.peerId !== message.senderId) {
-        return next(); 
-    }
+    if (!text || message.peerId !== message.senderId) return next();
 
     const userId = message.senderId;
-    
-    // Проверяем, находится ли пользователь в состоянии ввода оценки
     const state = adminStates.get(userId);
 
     if (state && state.startsWith('rating_')) {
-        // Достаем ID репорта из состояния
         const reportId = state.split('_')[1];
-        
-        // Пытаемся преобразовать текст в число
         const rating = parseInt(text);
 
-        // Если это не число или число вне диапазона 1-10 - просим ввести заново
-        if (isNaN(rating) || rating < 1 || rating > 10) {
-            return await message.reply("❌ Пожалуйста, введите число от 1 до 10.");
-        }
+        if (isNaN(rating) || rating < 1 || rating > 10) return await message.reply("❌ Введите число от 1 до 10.");
 
-        // Удаляем состояние, так как оценка введена
         adminStates.delete(userId);
-        
-        // Получаем репорт из базы
         const report = await dbGet("SELECT * FROM reports WHERE id = ?", [reportId]);
         
         if (report) {
-            // Сохраняем оценку в базу
             await dbRun("UPDATE reports SET rating = ? WHERE id = ?", [rating, reportId]);
 
-            // Если оценка плохая (1-4)
+            // 1-4 ПЛОХО
             if (rating <= 4) {
-                const badKb = getBadRateKb(reportId);
-                
-                return await message.reply(`😔 Спасибо за ваш отзыв (Оценка: ${rating}/10).\nПодскажите, что именно вам не понравилось?`, { keyboard: badKb });
-            } else {
-                // Если оценка хорошая (5-10)
+                return await message.reply(`😔 Оценка ${rating}/10 (Плохо).\nЧто не так?`, { keyboard: getBadRateKb(reportId) });
+            } 
+            // 5-10 ХОРОШО
+            else {
                 await dbRun("UPDATE reports SET status = 'closed' WHERE id = ?", [reportId]);
-                
-                // Фразы для рандома при хорошей оценке
-                const goodPhrases = ["Быстрый ответ", "Помог с вопросом", "Вежливый администратор", "Отличная работа", "Всё супер"];
-                const phrase = goodPhrases[Math.floor(Math.random() * goodPhrases.length)];
-                
-                // Отправляем уведомление админу об отличной оценке
-                try {
-                    await vk.api.messages.send({
-                        peer_id: ADMIN_ID,
-                        message: `🌟 Отзыв по репорту #${report.id}!\n👤 Игрок: [id${report.reporter_id}|Игрок]\n📊 Оценка: ${rating}/10\n💬 Плюс: ${phrase}`,
-                        random_id: Math.floor(Math.random() * 1000000000)
-                    });
-                } catch(e) {}
-
-                return await message.reply(`🙏 Спасибо за ваш отзыв (Оценка: ${rating}/10).\nМы рады, что смогли помочь! Репорт закрыт.`);
+                return await message.reply(`🙏 Оценка ${rating}/10 (Хорошо)!\nСпасибо, что выбрали причину:`, { keyboard: getGoodRateKb(reportId) });
             }
         }
         return;
     }
-
-    // Если это не оценка, передаем управление дальше (в основной обработчик message_new)
     return next();
 });
 
-// ===== ПРИВЕТСТВИЕ ПРИ ДОБАВЛЕНИИ БОТА В БЕСЕДУ =====
+// ===== ПРИВЕТСТВИЕ И БАН ПРИ ВХОДЕ =====
 vk.updates.on('chat_invite_user', async (context) => {
-    // Если добавили обычного игрока, проверяем, не в бане ли он
     if (context.memberId > 0) {
         const globalBan = await dbGet("SELECT reason, until FROM blacklist WHERE user_id = ?", [String(context.memberId)]);
-        
         if (globalBan) {
             if (globalBan.until !== 0 && Date.now() > globalBan.until) {
-                // Если ЧС истек, удаляем из базы
                 await dbRun("DELETE FROM blacklist WHERE user_id = ?", [String(context.memberId)]);
             } else {
-                // Если ЧС активен, кикаем игрока из беседы
-                try { 
-                    await vk.api.messages.removeChatUser({ 
-                        chat_id: context.peerId - 2000000000, 
-                        user_id: context.memberId, 
-                        group_id: GROUP_ID 
-                    }); 
-                } catch(e) {}
+                try { await vk.api.messages.removeChatUser({ chat_id: context.peerId - 2000000000, user_id: context.memberId, group_id: GROUP_ID }); } catch(e) {}
                 return;
             }
         }
         
-        // Проверяем бан в конкретной беседе
         const chatBan = await dbGet("SELECT reason FROM chat_bans WHERE user_id = ? AND peer_id = ?", [String(context.memberId), String(context.peerId)]);
-        
         if (chatBan) {
             try {
-                // Кикаем и пишем причину
-                await vk.api.messages.removeChatUser({ 
-                    chat_id: context.peerId - 2000000000, 
-                    user_id: context.memberId, 
-                    group_id: GROUP_ID 
-                });
-                
-                await vk.api.messages.send({ 
-                    peer_id: context.peerId, 
-                    message: `🚫 [id${context.memberId}|Игрок] был исключен, так как имеет бан в этой беседе.\n📌 Причина: ${chatBan.reason}`, 
-                    random_id: Math.floor(Math.random() * 1000000000), 
-                    disable_mentions: 1 
-                });
+                await vk.api.messages.removeChatUser({ chat_id: context.peerId - 2000000000, user_id: context.memberId, group_id: GROUP_ID });
+                await vk.api.messages.send({ peer_id: context.peerId, message: `🚫 [id${context.memberId}|Игрок] кикнут (Бан в беседе).\nПричина: ${chatBan.reason}`, random_id: 0, disable_mentions: 1 });
             } catch(e) {} 
         }
     }
 
-    // Если в беседу добавили самого бота
     if (String(context.memberId) === String(-GROUP_ID)) {
         let isAdmin = false;
-        
-        // Проверяем, есть ли у бота права администратора
         try {
             const members = await vk.api.messages.getConversationMembers({ peer_id: context.peerId });
             const bot = members.items.find(m => m.member_id == -GROUP_ID || m.member_id == GROUP_ID);
             isAdmin = bot && bot.is_admin;
         } catch(e) {}
 
-        let greetText = "";
+        const greetText = isAdmin 
+            ? "Привет! Я Game Zone Bot. Права есть. Пиши help." 
+            : "Привет! Я Game Zone Bot. Дай админку для полной работы. Пиши help.";
         
-        // Формируем текст приветствия в зависимости от наличия прав
-        if (isAdmin) {
-            greetText = "Привет! Я Официальный бот Game Zone. Я добавлен в беседу с правами администратора, поэтому все функции доступны. Напишите старт для активации и хелп для списка команд.";
-        } else {
-            greetText = "Привет! Я Официальный бот Game Zone. Внимание: у меня нет прав администратора в этой беседе, поэтому некоторые функции (мут, кик, антиспам) не будут работать. Чтобы я работал в полную силу, выдайте мне админку. Напишите старт для активации.";
-        }
-        
-        // Кнопки активации
         const actKb = Keyboard.builder().inline()
             .callbackButton({ label: 'Активировать', payload: { cmd: 'activate_bot' }, color: Keyboard.POSITIVE_COLOR })
-            .callbackButton({ label: 'Не активировать', payload: { cmd: 'decline_bot' }, color: Keyboard.NEGATIVE_COLOR });
+            .callbackButton({ label: 'Отмена', payload: { cmd: 'decline_bot' }, color: Keyboard.NEGATIVE_COLOR });
         
-        // Отправляем приветствие
         try {
-            await vk.api.messages.send({
-                peer_id: context.peerId,
-                message: greetText,
-                keyboard: actKb.toString(),
-                random_id: Math.floor(Math.random() * 1000000000),
-                group_id: GROUP_ID,
-                disable_mentions: 1
-            });
-        } catch (err) {
-            console.error("Ошибка при отправке приветствия:", err);
-        }
+            await vk.api.messages.send({ peer_id: context.peerId, message: greetText, keyboard: actKb.toString(), random_id: 0, group_id: GROUP_ID, disable_mentions: 1 });
+        } catch (err) { console.error(err); }
     }
 });
 
-// ===== ЗАПУСК БОТА =====
+// ===== ЗАПУСК =====
 console.log("=========================================");
-console.log("ПОПЫТКА ЗАПУСКА БОТА...");
+console.log("ЗАПУСК GAME ZONE BOT...");
 console.log("=========================================");
 
 vk.updates.startPolling().then(() => {
-    console.log("--- БОТ УСПЕШНО ЗАПУЩЕН (LONGPOLL) ---");
+    console.log("--- БОТ ЗАПУЩЕН ---");
 }).catch(err => {
-    console.error("ОШИБКА ПРИ СТАРТЕ:", err);
+    console.error("ОШИБКА СТАРТА:", err);
 });
