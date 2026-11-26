@@ -217,13 +217,11 @@ async function generateProfileImage(userId) {
         canvas.composite(banner, 0, 400);
         
         try {
-            // Пробуем загрузить шрифт
             const font = await Jimp.loadFont("https://raw.githubusercontent.com/Fluffffy/jimp-cyrillic-fonts/master/fonts/open-sans-32-white/open-sans-32-white.fnt");
             if (font) {
                 canvas.print(font, 0, 405, { text: nameText, alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER, alignmentY: Jimp.VERTICAL_ALIGN_MIDDLE }, 400, 40);
             }
         } catch(e) {
-            // Если шрифт не грузится, пробуем стандартный (может не поддерживать кириллицу, но хоть что-то)
             try {
                 const font = await Jimp.loadFont(Jimp.FONT_SANS_32_WHITE);
                 canvas.print(font, 0, 405, { text: nameText, alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER, alignmentY: Jimp.VERTICAL_ALIGN_MIDDLE }, 400, 40);
@@ -378,44 +376,35 @@ const getHelpBackKb = () => {
         .toString();
 };
 
-const getDuelKb = (duelId) => {
-    return Keyboard.builder().inline().callbackButton({ label: '⚔️ Сразиться', payload: { cmd: 'duel_accept', duel_id: duelId }, color: Keyboard.POSITIVE_COLOR }).toString();
-};
-
-const getMinesCountKb = (gameId) => {
-    const kb = Keyboard.builder().inline();
-    let count = 0;
-    for (let i = 2; i <= 8; i++) {
-        kb.callbackButton({ label: `${i} 💣`, payload: { cmd: 'mines_set', gameId: String(gameId), count: String(i) }, color: Keyboard.SECONDARY_COLOR });
-        count++;
-        if (count % 4 === 0 && i !== 8) kb.row();
-    }
-    return kb.toString();
-};
-
+// ИСПРАВЛЕННЫЙ ТОП: КНОПКИ "ОБЩЕЕ/В БЕСЕДЕ" ТЕПЕРЬ ВНУТРИ РАЗДЕЛА
 const getTopKb = (authorId, type = 'coins', scope = 'chat', repType = 'pos') => {
     const kb = Keyboard.builder().inline();
-    // Кнопки выбора типа ТОЛЬКО внутри раздела
+    
+    // 1. Выбор категории (всегда сверху)
     kb.callbackButton({ label: '💰 Монеты', payload: { cmd: 'top_menu', type: 'coins', scope, repType, author: authorId }, color: type === 'coins' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     kb.callbackButton({ label: '⭐ Лиги', payload: { cmd: 'top_menu', type: 'level', scope, repType, author: authorId }, color: type === 'level' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     kb.row();
     kb.callbackButton({ label: '⚔️ Дуэли', payload: { cmd: 'top_menu', type: 'duels', scope, repType, author: authorId }, color: type === 'duels' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     kb.callbackButton({ label: '📊 Репутация', payload: { cmd: 'top_menu', type: 'rep', scope, repType, author: authorId }, color: type === 'rep' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     kb.row();
+    
     if (type === 'rep') {
         kb.callbackButton({ label: '➕ Положит.', payload: { cmd: 'top_menu', type: 'rep', scope, repType: 'pos', author: authorId }, color: repType === 'pos' ? Keyboard.POSITIVE_COLOR : Keyboard.SECONDARY_COLOR });
         kb.callbackButton({ label: '➖ Отрицат.', payload: { cmd: 'top_menu', type: 'rep', scope, repType: 'neg', author: authorId }, color: repType === 'neg' ? Keyboard.NEGATIVE_COLOR : Keyboard.SECONDARY_COLOR });
         kb.row();
     }
+    
     kb.callbackButton({ label: '🎁 Бонус', payload: { cmd: 'top_menu', type: 'bonus', scope, repType, author: authorId }, color: type === 'bonus' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     
-    // Кнопки "Общее/В беседе" ВНУТРИ раздела
+    // 2. Разделитель и переключатели режима (теперь ВНУТРИ раздела)
     kb.row();
     kb.callbackButton({ label: '🌍 Общее', payload: { cmd: 'top_menu', type, scope: 'global', repType, author: authorId }, color: scope === 'global' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     kb.callbackButton({ label: '💬 В беседе', payload: { cmd: 'top_menu', type, scope: 'chat', repType, author: authorId }, color: scope === 'chat' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     
+    // 3. Кнопка назад в самом низу
     kb.row();
     kb.callbackButton({ label: '🔙 Назад', payload: { cmd: 'top_back', author: authorId }, color: Keyboard.SECONDARY_COLOR });
+    
     return kb.toString();
 };
 
