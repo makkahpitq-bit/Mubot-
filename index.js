@@ -680,7 +680,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(`📱 Сим-карта слита за 10,000$!`, replyParams());
         }
 
-        // --- РЕПУТАЦИЯ (ВРЕМЕННЫЙ ФИКС БЕЗ ИЗМЕНЕНИЯ БД) ---
+        // --- РЕПУТАЦИЯ (ИСПРАВЛЕННАЯ ЛОГИКА: ПЕРСОНАЛЬНЫЙ ЛИМИТ) ---
         if (cmdWord === 'rep' || cmdWord === 'реп') {
             if (parts.length < 2) return await message.reply("🔔 Формат: /rep + или /rep - @ник", replyParams());
             
@@ -689,11 +689,15 @@ vk.updates.on('message_new', async (message) => {
             if (!isPlus && !isMinus) return await message.reply("🔔 Используйте + или -", replyParams());
 
             let targetId = null;
-            if (message.hasReplyMessage) targetId = message.replyMessage.senderId;
-            else {
+            // Если ответили на сообщение - берем автора ответа
+            if (message.hasReplyMessage) {
+                targetId = message.replyMessage.senderId;
+            } else {
+                // Иначе ищем упоминание или ник после команды
                 const targetStr = parts.slice(2).join(' ');
                 const idMatch = targetStr.match(/\[id(\d+)\|/i);
                 const mentionMatch = targetStr.match(/@([a-zA-Z0-9._]+)/i);
+                
                 if (idMatch) targetId = parseInt(idMatch[1]);
                 else if (mentionMatch) {
                     try {
@@ -703,28 +707,27 @@ vk.updates.on('message_new', async (message) => {
                 }
             }
 
-            if (!targetId) return await message.reply("⚠️ Укажите пользователя.", replyParams());
-            if (targetId === userId) return await message.reply("❌ Нельзя себе.", replyParams());
+            if (!targetId) return await message.reply("⚠️ Укажите пользователя (ответом или через @).", replyParams());
+            if (targetId === userId) return await message.reply("❌ Нельзя изменить репутацию самому себе.", replyParams());
 
-            // Проверяем лимит действий (3 раза в сутки) - СТАРАЯ ЛОГИКА ДЛЯ СОВМЕСТИМОСТИ
             const now = Date.now();
-            const repRow = await dbGet("SELECT count, last_reset FROM rep_limits WHERE user_id = ?", [String(userId)]);
-            let repCount = repRow ? Number(repRow.count) : 0;
-            let repReset = repRow ? Number(repRow.last_reset) : 0;
-
-            if (now - repReset >= 86400000) { repCount = 0; repReset = now; }
-            if (repCount >= 3) {
-                const hoursLeft = Math.ceil((86400000 - (now - repReset)) / 3600000);
-                const minsLeft = Math.floor(((86400000 - (now - repReset)) % 3600000) / 60000);
-                return await message.reply(`⛔ Вы уже изменяли репутацию этого пользователя. Попробуйте снова через ${hoursLeft} часа ${minsLeft} минут.`);
+            
+            // Проверяем, давал ли ТЫ (userId) реп ЭТОМУ ЧЕЛОВЕКУ (targetId) за последние 24 часа
+            const repLimit = await dbGet("SELECT last_given FROM rep_limits WHERE user_id = ? AND target_id = ?", [String(userId), String(targetId)]);
+            
+            if (repLimit && (now - repLimit.last_given) < 86400000) {
+                const timeLeft = 86400000 - (now - repLimit.last_given);
+                const hours = Math.floor(timeLeft / 3600000);
+                const minutes = Math.floor((timeLeft % 3600000) / 60000);
+                return await message.reply(`⛔ Вы уже изменяли репутацию этого пользователя. Попробуйте снова через ${hours} ч. ${minutes} мин.`);
             }
 
-            repCount++;
-            await dbRun("REPLACE INTO rep_limits (user_id, count, last_reset) VALUES (?, ?, ?)", [String(userId), repCount, repReset]);
+            // Записываем в базу, что мы дали реп этому человеку СЕЙЧАС
+            await dbRun("INSERT OR REPLACE INTO rep_limits (user_id, target_id, last_given) VALUES (?, ?, ?)", [String(userId), String(targetId), now]);
 
             if (isPlus) {
                 await updateReputation(targetId, 1);
-                // Обновляем прогресс ивента
+                // Обновляем прогресс зимнего ивента (если нужно)
                 let ev = await dbGet("SELECT * FROM winter_event WHERE user_id = ?", [String(userId)]);
                 if (!ev) await dbRun("INSERT INTO winter_event (user_id) VALUES (?)", [String(userId)]);
                 await dbRun("UPDATE winter_event SET reps_given = reps_given + 1 WHERE user_id = ?", [String(userId)]);
@@ -734,6 +737,7 @@ vk.updates.on('message_new', async (message) => {
 
             return await message.reply(`✅ Репутация ${await getFullName(targetId)} изменена.`, replyParams());
         }
+        
 
         // --- ПРОФИЛЬ (ЗИМНИЕ ЭМОДЗИ 🎄, БЕЗ ОДЕЖДЫ) ---
         if (cmdWord === 'профиль' || cmdWord === 'баланс') {
