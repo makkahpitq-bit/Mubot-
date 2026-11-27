@@ -680,7 +680,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(`📱 Сим-карта слита за 10,000$!`, replyParams());
         }
 
-        // --- РЕПУТАЦИЯ (ФИКС КАК НА СКРИНЕ STAR MANAGER) ---
+        // --- РЕПУТАЦИЯ (ВРЕМЕННЫЙ ФИКС БЕЗ ИЗМЕНЕНИЯ БД) ---
         if (cmdWord === 'rep' || cmdWord === 'реп') {
             if (parts.length < 2) return await message.reply("🔔 Формат: /rep + или /rep - @ник", replyParams());
             
@@ -706,18 +706,21 @@ vk.updates.on('message_new', async (message) => {
             if (!targetId) return await message.reply("⚠️ Укажите пользователя.", replyParams());
             if (targetId === userId) return await message.reply("❌ Нельзя себе.", replyParams());
 
-            // Проверяем, давал ли игрок реп этому человеку сегодня
+            // Проверяем лимит действий (3 раза в сутки) - СТАРАЯ ЛОГИКА ДЛЯ СОВМЕСТИМОСТИ
             const now = Date.now();
-            const repLimit = await dbGet("SELECT last_given FROM rep_limits WHERE user_id = ? AND target_id = ?", [String(userId), String(targetId)]);
-            
-            if (repLimit && (now - repLimit.last_given) < 86400000) {
-                const hoursLeft = Math.ceil((86400000 - (now - repLimit.last_given)) / 3600000);
-                const minsLeft = Math.floor(((86400000 - (now - repLimit.last_given)) % 3600000) / 60000);
+            const repRow = await dbGet("SELECT count, last_reset FROM rep_limits WHERE user_id = ?", [String(userId)]);
+            let repCount = repRow ? Number(repRow.count) : 0;
+            let repReset = repRow ? Number(repRow.last_reset) : 0;
+
+            if (now - repReset >= 86400000) { repCount = 0; repReset = now; }
+            if (repCount >= 3) {
+                const hoursLeft = Math.ceil((86400000 - (now - repReset)) / 3600000);
+                const minsLeft = Math.floor(((86400000 - (now - repReset)) % 3600000) / 60000);
                 return await message.reply(`⛔ Вы уже изменяли репутацию этого пользователя. Попробуйте снова через ${hoursLeft} часа ${minsLeft} минут.`);
             }
 
-            // Обновляем или создаем запись лимита
-            await dbRun("INSERT OR REPLACE INTO rep_limits (user_id, target_id, last_given) VALUES (?, ?, ?)", [String(userId), String(targetId), now]);
+            repCount++;
+            await dbRun("REPLACE INTO rep_limits (user_id, count, last_reset) VALUES (?, ?, ?)", [String(userId), repCount, repReset]);
 
             if (isPlus) {
                 await updateReputation(targetId, 1);
@@ -1434,7 +1437,7 @@ vk.updates.on('message_new', async (message) => {
             await updateBalance(userId, amount);
             await dbRun("UPDATE users SET last_bonus_date = ?, bonus_streak = ?, bonus_count = bonus_count + 1 WHERE user_id = ?", [todayStr, streak, String(userId)]);
             return await message.reply(`🎁 ЕЖЕДНЕВНЫЙ БОНУС\n────────────────────\n🔥 Стрик: ${streak} дн.!\n💰 Награда: +${formatMoney(amount)}$\n\n💳 Баланс: ${formatMoney(await getBalance(userId))}$`, replyParams(isLs ? mainKb : undefined));
-        }
+                }
         // ===== АДМИНСКИЕ КОМАНДЫ =====
         if (userId === ADMIN_ID) {
             
@@ -2204,10 +2207,10 @@ vk.updates.on('message_event', async (context) => {
             const text = payload.text || "Нарушение правил";
             
             try {
-                // Send notification to reporter
+                // Отправляем уведомление вызвавшему админа
                 await vk.api.messages.send({ peer_id: Number(reporterId), message: `✅ Ваша жалоба на [id${targetId}|Игрока] принята администрацией.`, random_id: 0 });
                 
-                // Send warning to violator
+                // Отправляем предупреждение нарушителю
                 await vk.api.messages.send({ peer_id: Number(targetId), message: `🚨 НА ВАС ПОДАЛИ ЖАЛОБУ!\n\nАдминистратор принял жалобу.\nПожалуйста, соблюдайте правила беседы.`, random_id: 0 });
             } catch(e) {}
             
