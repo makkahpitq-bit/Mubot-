@@ -680,7 +680,8 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(`📱 Сим-карта слита за 10,000$!`, replyParams());
         }
 
-        // --- РЕПУТАЦИЯ (ИСПРАВЛЕННАЯ ЛОГИКА: ПЕРСОНАЛЬНЫЙ ЛИМИТ) ---
+        
+                // --- РЕПУТАЦИЯ (ИСПРАВЛЕННАЯ ЛОГИКА: ПЕРСОНАЛЬНЫЙ ЛИМИТ) ---
         if (cmdWord === 'rep' || cmdWord === 'реп') {
             if (parts.length < 2) return await message.reply("🔔 Формат: /rep + или /rep - @ник", replyParams());
             
@@ -736,7 +737,7 @@ vk.updates.on('message_new', async (message) => {
             }
 
             return await message.reply(`✅ Репутация ${await getFullName(targetId)} изменена.`, replyParams());
-        }
+                                                                                                                       }
         
 
         // --- ПРОФИЛЬ (ЗИМНИЕ ЭМОДЗИ 🎄, БЕЗ ОДЕЖДЫ) ---
