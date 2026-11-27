@@ -639,19 +639,25 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(`🏓 Понг: ${Date.now() - start} мс`, replyParams());
         }
 
-        // --- СИМ-КАРТЫ ---
+        // --- СИМ-КАРТЫ (ВЫБОР НОМЕРА ИГРОКОМ) ---
         if (cmdWord === 'купитьсим') {
             if (userRow.sim_card) return await message.reply(`❌ У вас уже есть сим-карта (${userRow.sim_card}). Сначала слейте её: слитьсим`, replyParams());
-            let newNumber = "";
-            let isFree = false;
-            while (!isFree) {
-                newNumber = String(Math.floor(1000 + Math.random() * 9000));
-                const existing = await dbGet("SELECT owner_id FROM sim_cards WHERE number = ?", [newNumber]);
-                if (!existing) isFree = true;
+            
+            // Получаем желаемый номер из аргументов
+            let desiredNumber = parts[1];
+            if (!desiredNumber || desiredNumber.length !== 4 || isNaN(desiredNumber)) {
+                return await message.reply("❌ Формат: /купитьсим [4 цифры]\nПример: /купитьсим 7777", replyParams());
             }
-            await dbRun("INSERT INTO sim_cards (number, owner_id) VALUES (?, ?)", [newNumber, String(userId)]);
-            await dbRun("UPDATE users SET sim_card = ? WHERE user_id = ?", [newNumber, String(userId)]);
-            return await message.reply(`📱 Сим-карта куплена!\nНомер: ${newNumber}`, replyParams());
+
+            // Проверяем, занят ли номер
+            const existing = await dbGet("SELECT owner_id FROM sim_cards WHERE number = ?", [desiredNumber]);
+            if (existing) {
+                return await message.reply(`❌ Номер ${desiredNumber} уже занят другим игроком! Выберите другой.`, replyParams());
+            }
+
+            await dbRun("INSERT INTO sim_cards (number, owner_id) VALUES (?, ?)", [desiredNumber, String(userId)]);
+            await dbRun("UPDATE users SET sim_card = ? WHERE user_id = ?", [desiredNumber, String(userId)]);
+            return await message.reply(`📱 Сим-карта куплена!\nВаш номер: ${desiredNumber}`, replyParams());
         }
 
         if (cmdWord === 'слитьсим') {
@@ -725,18 +731,18 @@ vk.updates.on('message_new', async (message) => {
             const carsStr = carsArr.length > 0 ? carsArr.join(', ') : "Нет";
             const simStr = userRow.sim_card || "Нет";
 
-            const profText = `❄️🎄 Профиль ${await getFullName(userId)} 🎄❄️\n\n` +
-                             `💵 Баланс: ${formatMoney(balance)}$\n` +
-                             `📱 Тел: ${simStr}\n` +
-                             `💎 Премиум: ${premStr}\n` +
-                             `⭐ Реп: ${rep}\n` +
-                             `📊 Уровень: ${userRow.level} (${userRow.xp}/${userRow.level*500} XP)\n\n` +
-                             `🏢 Бизнес: ${bizStr}\n` +
-                             `🏠 Дом: ${houseData ? houseData.location + ' Т' + houseData.tier : "Нет"}\n` +
-                             `🏘️ Гараж: ${garageData ? garageData.location + ' Т' + garageData.tier : "Нет"}\n` +
-                             `🚗 Машины (${carsArr.length}/10): ${carsStr}\n` +
-                             `🏛️ Орг: ${userRow.org || "Нет"}\n` +
-                             `🌍 Страна: ${userRow.country || "Нет"}\n\n` +
+            const profText = `❄️🌲 Профиль ${await getFullName(userId)} 🌲❄️\n\n` +
+                             `❄️ Баланс: ${formatMoney(balance)}$\n` +
+                             `❄️ Тел: ${simStr}\n` +
+                             `❄️ Премиум: ${premStr}\n` +
+                             `❄️ Реп: ${rep}\n` +
+                             `❄️ Уровень: ${userRow.level} (${userRow.xp}/${userRow.level*500} XP)\n\n` +
+                             `🌲 Бизнес: ${bizStr}\n` +
+                             `🌲 Дом: ${houseData ? houseData.location + ' Т' + houseData.tier : "Нет"}\n` +
+                             `🌲 Гараж: ${garageData ? garageData.location + ' Т' + garageData.tier : "Нет"}\n` +
+                             `🌲 Машины (${carsArr.length}/10): ${carsStr}\n` +
+                             `🌲 Орг: ${userRow.org || "Нет"}\n` +
+                             `🌲 Страна: ${userRow.country || "Нет"}\n\n` +
                              `🆔 ID: ${userId}`;
 
             let attachment = null;
@@ -866,6 +872,95 @@ vk.updates.on('message_new', async (message) => {
             await updateBalance(userId, totalBalance);
             await dbRun("UPDATE businesses SET balance = 0, last_income = ?, last_withdraw = ? WHERE user_id = ?", [now, now, String(userId)]);
             return await message.reply(`💸 Выведено ${formatMoney(totalBalance)}$!`, replyParams());
+        }
+
+        // --- ДОМА И ГАРАЖИ (ИСПРАВЛЕНО) ---
+        if (cmdWord === 'дома') {
+            let txt = "🏠 Доступные дома:\n\n";
+            let i = 1;
+            for (const [key, data] of Object.entries(PROPERTY_DATA)) {
+                const countRow = await dbGet("SELECT COUNT(*) as c FROM properties WHERE location = ? AND type = 'house'", [data.name]);
+                txt += `${i}. ${data.name} — ${formatMoney(data.housePrice)}$ (Свободно: ${20 - countRow.c}/20)\n`;
+                i++;
+            }
+            return await message.reply(txt + "\n💡 Купить: купить дом топ [номер] [Локация]\n💡 Продать: продать дом [сумма] (ответом)", replyParams());
+        }
+
+        if (cmdWord === 'гаражи') {
+            let txt = "🏘️ Доступные гаражи:\n\n";
+            let i = 1;
+            for (const [key, data] of Object.entries(PROPERTY_DATA)) {
+                const countRow = await dbGet("SELECT COUNT(*) as c FROM properties WHERE location = ? AND type = 'garage'", [data.name]);
+                txt += `${i}. ${data.name} — ${formatMoney(data.garagePrice)}$ (Свободно: ${20 - countRow.c}/20)\n`;
+                i++;
+            }
+            return await message.reply(txt + "\n💡 Купить: купить гараж топ [номер] [Локация]\n💡 Продать: продать гараж [сумма] (ответом)", replyParams());
+        }
+
+        if (cmdWord === 'купить' && (parts[1] === 'дом' || parts[1] === 'гараж')) {
+            const propType = parts[1]; // 'дом' или 'гараж'
+            const tierNum = parseInt(parts[2]); // номер топа (1, 2, 3...)
+            const locationName = parts.slice(3).join(' ').toLowerCase().trim();
+
+            if (!tierNum || !locationName) return await message.reply(`❌ Формат: купить ${propType} топ [номер] [Локация]`);
+
+            // Находим локацию по названию
+            let selectedLoc = null;
+            for (const [key, data] of Object.entries(PROPERTY_DATA)) {
+                if (key.includes(locationName) || data.name.toLowerCase().includes(locationName)) {
+                    selectedLoc = { key, ...data };
+                    break;
+                }
+            }
+            if (!selectedLoc) return await message.reply("❌ Такая локация не найдена. Посмотрите список: /дома или /гаражи");
+
+            // Проверяем, есть ли у игрока уже такая недвижимость
+            const existingProp = await dbGet("SELECT id FROM properties WHERE owner_id = ? AND type = ? AND location = ?", [String(userId), propType, selectedLoc.name]);
+            if (existingProp) return await message.reply(`❌ У вас уже есть ${propType} в локации ${selectedLoc.name}!`);
+
+            // Проверяем свободные места
+            const countRow = await dbGet("SELECT COUNT(*) as c FROM properties WHERE location = ? AND type = ?", [selectedLoc.name, propType]);
+            if (countRow.c >= 20) return await message.reply(`❌ В локации ${selectedLoc.name} больше нет свободных ${propType === 'дом' ? 'домов' : 'гаражей'}!`);
+
+            const price = propType === 'дом' ? selectedLoc.housePrice : selectedLoc.garagePrice;
+            if (balance < price) return await message.reply(`❌ Не хватает денег! Нужно ${formatMoney(price)}$`);
+
+            await updateBalance(userId, -price);
+            await dbRun("INSERT INTO properties (type, location, tier, owner_id) VALUES (?, ?, ?, ?)", [propType, selectedLoc.name, tierNum, String(userId)]);
+            
+            const emoji = propType === 'дом' ? '🏠' : '🏘️';
+            return await message.reply(`${emoji} Вы успешно купили ${propType} в локации ${selectedLoc.name} за ${formatMoney(price)}$!`, replyParams());
+        }
+
+        if (cmdWord === 'продать' && (parts[1] === 'дом' || parts[1] === 'гараж')) {
+            const propType = parts[1];
+            if (!message.hasReplyMessage) return await message.reply(`❌ Ответьте на сообщение покупателя и напишите: продать ${propType} [сумма]`);
+
+            const buyerId = message.replyMessage.senderId;
+            const price = parseAmount(parts[2]);
+            
+            if (!price || price < 1000) return await message.reply(`❌ Укажите корректную сумму продажи.`);
+            if (buyerId === userId) return await message.reply("❌ Нельзя продать самому себе.");
+
+            // Ищем недвижимость продавца в текущей локации (упрощенно берем первую попавшуюся нужного типа)
+            // В идеале нужно передавать ID недвижимости, но для простоты берем последнюю купленную
+            const myProp = await dbGet("SELECT id, location, type FROM properties WHERE owner_id = ? AND type = ? ORDER BY id DESC LIMIT 1", [String(userId), propType]);
+            
+            if (!myProp) return await message.reply(`❌ У вас нет ${propType} для продажи!`);
+
+            // Проверка баланса покупателя
+            const buyerBal = await getBalance(buyerId);
+            if (buyerBal < price) return await message.reply("❌ У покупателя недостаточно средств!");
+
+            // Передача прав собственности
+            await dbRun("UPDATE properties SET owner_id = ? WHERE id = ?", [String(buyerId), myProp.id]);
+            
+            // Деньги
+            await updateBalance(userId, price);
+            await updateBalance(buyerId, -price);
+
+            const emoji = propType === 'дом' ? '🏠' : '🏘️';
+            return await message.reply(`${emoji} Вы продали ${propType} в локации ${myProp.location} игроку ${await getFullName(buyerId)} за ${formatMoney(price)}$!`, replyParams());
         }
 
         // --- ТОП ---
