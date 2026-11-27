@@ -75,10 +75,12 @@ const PROPERTY_DATA = {
     'гарель': { name: 'Гарель', housePrice: 100000000, garagePrice: 20000000 }
 };
 
-// ===== ИНИЦИАЛИЗАЦИЯ БД =====
+// ===== ИНИЦИАЛИЗАЦИЯ БД (С ФИКСОМ ОШИБКИ LAST_OPENED) =====
 async function initDB() {
+    // Принудительно пересоздаем таблицы winter_event и winter_limits, чтобы добавить новые колонки
+    await dbRun("DROP TABLE IF EXISTS winter_event");
+    await dbRun("DROP TABLE IF EXISTS winter_limits");
     await dbRun("DROP TABLE IF EXISTS reports");
-    await dbRun("DROP TABLE IF EXISTS winter_limits"); // Пересоздаем для фикса last_reset
 
     await dbRun("CREATE TABLE IF NOT EXISTS users (user_id TEXT PRIMARY KEY, balance INTEGER DEFAULT 1000, reputation INTEGER DEFAULT 0, xp INTEGER DEFAULT 0, level INTEGER DEFAULT 1, reg_date TEXT, duel_wins INTEGER DEFAULT 0, bonus_count INTEGER DEFAULT 0, premium_until INTEGER DEFAULT 0, org TEXT, country TEXT, clothes TEXT, cars TEXT DEFAULT '[]', last_bonus_date TEXT, bonus_streak INTEGER DEFAULT 0, sim_card TEXT)");
     await dbRun("CREATE TABLE IF NOT EXISTS active_duels (msg_id TEXT PRIMARY KEY, challenger TEXT, bet INTEGER, peer_id TEXT)");
@@ -107,7 +109,7 @@ async function initDB() {
     // Таблица репортов
     await dbRun("CREATE TABLE IF NOT EXISTS reports (id INTEGER PRIMARY KEY AUTOINCREMENT, reporter_id TEXT, text TEXT, status TEXT DEFAULT 'pending', chat_id TEXT, reply_text TEXT, rating INTEGER DEFAULT 0, rate_reason TEXT)");
 
-    // Таблица зимнего ивента
+    // Таблица зимнего ивента (С КОЛОНКОЙ last_opened)
     await dbRun("CREATE TABLE IF NOT EXISTS winter_event (user_id TEXT PRIMARY KEY, reps_given INTEGER DEFAULT 0, game_score INTEGER DEFAULT 0, msgs_sent INTEGER DEFAULT 0, completed INTEGER DEFAULT 0, last_opened INTEGER DEFAULT 0)");
     
     // Таблица лимитов зимних игр (0/10) - СОЗДАЕМ ЗАНОВО ЧТОБЫ ГАРАНТИРОВАТЬ last_reset
@@ -119,7 +121,7 @@ async function initDB() {
     try { await dbRun("ALTER TABLE users ADD COLUMN sim_card TEXT"); } catch(e) {}
     try { await dbRun("ALTER TABLE users ADD COLUMN cars TEXT DEFAULT '[]'"); } catch(e) {}
 
-    console.log("--- БАЗА ДАННЫХ ГОТОВА ---");
+    console.log("--- БАЗА ДАННЫХ ГОТОВА (ФИКС WINTER_EVENT И LIMITS) ---");
 }
 initDB();
 
@@ -341,7 +343,7 @@ function buildMinesKb(gameId, opened, mines = [], isGameOver = false, hitCell = 
         kb.callbackButton({ label: `💰 Забрать ${currentMoney}`, payload: { cmd: 'mines_cashout', gameId: String(gameId) }, color: Keyboard.SECONDARY_COLOR });
     }
     return kb.toString();
-        }
+}
 // ===== КЛАВИАТУРЫ =====
 const mainKb = Keyboard.builder()
     .callbackButton({ label: '💼 Работа', payload: { cmd: 'main_menu', action: 'work' }, color: Keyboard.POSITIVE_COLOR })
@@ -579,7 +581,8 @@ vk.updates.on('message_new', async (message) => {
             }
         }
 
-        const validCmds = ['стакан', 'кубик', 'монетка', 'дрим', 'краш', 'рулетка', 'рул', 'автомат', 'блэкджек', 'мины', 'топ', 'профиль', 'баланс', 'бизнес', 'машины', 'работа', 'бонус', 'фортуна', 'казино', 'help', 'помощь', 'start', 'начать', 'transfer', 'перевод', 'duel', 'вывести', 'мойбизнес', 'закрыть', 'rep', 'реп', 'промолист', 'promo', 'купить', 'купитьбиз', 'чсб', 'разчсб', 'kick', 'выдать', 'обнулить', 'создать', 'cc', 'ping', 'пинг', 'убрать', 'дом', 'дома', 'гараж', 'гаражи', 'продать', 'бан', 'kl', 'mute', 'unmute', 'размут', 'unban', 'разбан', 'заморозить', 'разморозить', 'снять', 'unfreeze', 'pr', 'sellcar', 'слить', 'дон', 'дондом', 'донгараж', 'cmd', 'моикоманды', 'premium', 'рег', 'q', 'админ', 'ahelp', 'объявление', 'report', 'вступить', 'организации', 'страна', 'страны', 'датьдолг', 'мойдолг', 'cl', 'снятьпред', 'купитьсим', 'слитьсим', 'event', 'открыть', 'снежки', 'елка', 'санки', 'снеговик', 'подарок', 'слитьбиз', 'logs', 'чсблист', 'banlist'];
+        // СПИСОК КОМАНД (УБРАНЫ ЗИМНИЕ ИГРЫ, ОСТАВЛЕНЫ ТОЛЬКО EVENT И ОТКРЫТЬ)
+        const validCmds = ['стакан', 'кубик', 'монетка', 'дрим', 'краш', 'рулетка', 'рул', 'автомат', 'блэкджек', 'мины', 'топ', 'профиль', 'баланс', 'бизнес', 'машины', 'работа', 'бонус', 'фортуна', 'казино', 'help', 'помощь', 'start', 'начать', 'transfer', 'перевод', 'duel', 'вывести', 'мойбизнес', 'закрыть', 'rep', 'реп', 'промолист', 'promo', 'купить', 'купитьбиз', 'чсб', 'разчсб', 'kick', 'выдать', 'обнулить', 'создать', 'cc', 'ping', 'пинг', 'убрать', 'дом', 'дома', 'гараж', 'гаражи', 'продать', 'бан', 'kl', 'mute', 'unmute', 'размут', 'unban', 'разбан', 'заморозить', 'разморозить', 'снять', 'unfreeze', 'pr', 'sellcar', 'слить', 'дон', 'дондом', 'донгараж', 'cmd', 'моикоманды', 'premium', 'рег', 'q', 'админ', 'ahelp', 'объявление', 'report', 'вступить', 'организации', 'страна', 'страны', 'датьдолг', 'мойдолг', 'cl', 'снятьпред', 'купитьсим', 'слитьсим', 'event', 'открыть', 'слитьбиз', 'logs', 'чсблист', 'banlist'];
         
         if (!validCmds.includes(cmdWord)) return; 
 
@@ -677,7 +680,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(`📱 Сим-карта слита за 10,000$!`, replyParams());
         }
 
-        // --- РЕПУТАЦИЯ (ФИКС КАК НА СКРИНЕ) ---
+        // --- РЕПУТАЦИЯ (ФИКС КАК НА СКРИНЕ STAR MANAGER) ---
         if (cmdWord === 'rep' || cmdWord === 'реп') {
             if (parts.length < 2) return await message.reply("🔔 Формат: /rep + или /rep - @ник", replyParams());
             
@@ -1389,6 +1392,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(`🎰 Выпало: ${formatMoney(prize)}$!`, replyParams());
         }
 
+        // ИСПРАВЛЕННЫЕ МИНЫ (ТЕПЕРЬ РАБОТАЮТ С getMinesCountKb)
         if (cmdWord === 'мины') {
             let bet = parseAmount(parts[1]) || 100;
             if (bet === 'ALL') bet = balance;
@@ -1430,7 +1434,7 @@ vk.updates.on('message_new', async (message) => {
             await updateBalance(userId, amount);
             await dbRun("UPDATE users SET last_bonus_date = ?, bonus_streak = ?, bonus_count = bonus_count + 1 WHERE user_id = ?", [todayStr, streak, String(userId)]);
             return await message.reply(`🎁 ЕЖЕДНЕВНЫЙ БОНУС\n────────────────────\n🔥 Стрик: ${streak} дн.!\n💰 Награда: +${formatMoney(amount)}$\n\n💳 Баланс: ${formatMoney(await getBalance(userId))}$`, replyParams(isLs ? mainKb : undefined));
-                                                       }
+        }
         // ===== АДМИНСКИЕ КОМАНДЫ =====
         if (userId === ADMIN_ID) {
             
@@ -2200,10 +2204,10 @@ vk.updates.on('message_event', async (context) => {
             const text = payload.text || "Нарушение правил";
             
             try {
-                // Отправляем уведомление вызвавшему админа
+                // Send notification to reporter
                 await vk.api.messages.send({ peer_id: Number(reporterId), message: `✅ Ваша жалоба на [id${targetId}|Игрока] принята администрацией.`, random_id: 0 });
                 
-                // Отправляем предупреждение нарушителю
+                // Send warning to violator
                 await vk.api.messages.send({ peer_id: Number(targetId), message: `🚨 НА ВАС ПОДАЛИ ЖАЛОБУ!\n\nАдминистратор принял жалобу.\nПожалуйста, соблюдайте правила беседы.`, random_id: 0 });
             } catch(e) {}
             
@@ -2330,7 +2334,7 @@ vk.updates.on('message_event', async (context) => {
             return await vk.api.messages.edit({ peer_id: peerId, message: `✅ Работа (${payload.type}): +${formatMoney(earned)}$\nОсталось: ${3-count}/3`, keyboard: getWorkKb(), conversation_message_id: context.conversationMessageId });
         }
 
-        // ================= HELP (ЗИМНИЙ РАЗДЕЛ) =================
+        // ================= HELP (ЗИМНИЙ РАЗДЕЛ - ТОЛЬКО EVENT) =================
         if (payload.cmd === 'help_start') {
             await safeAnswer();
             return await vk.api.messages.edit({ peer_id: peerId, message: "📖 Разделы:", keyboard: getHelpKb(), conversation_message_id: context.conversationMessageId });
@@ -2536,7 +2540,7 @@ vk.updates.on('message_new', async (message, next) => {
     const userId = message.senderId;
     const state = adminStates.get(userId);
 
-    // Обработка ответов на загадки зимних игр
+    // Обработка ответов на загадки зимних игр (если они вдруг останутся в validCmds)
     if (state && state.startsWith('riddle_')) {
         const parts = state.split('_');
         const gameCmd = parts[1];
@@ -2559,7 +2563,7 @@ vk.updates.on('message_new', async (message, next) => {
             const emojis = {
                 'снежки': '❄️', 'елка': '🎄', 'санки': '🛷', 'снеговик': '⛄', 'подарок': '🎁'
             };
-            return await message.reply(`${emojis[gameCmd]} Правильно! 🎉\n💰 Награда: +${formatMoney(prize)}$`);
+            return await message.reply(`${emojis[gameCmd] || '🎉'} Правильно! 🎉\n💰 Награда: +${formatMoney(prize)}$`);
         } else {
             return await message.reply(`❌ Неверно! Правильный ответ: ${correctAnswer}. Попробуйте еще раз (лимит не тратится при ошибке).`);
         }
