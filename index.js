@@ -75,9 +75,10 @@ const PROPERTY_DATA = {
     'гарель': { name: 'Гарель', housePrice: 100000000, garagePrice: 20000000 }
 };
 
-// ===== ИНИЦИАЛИЗАЦИЯ БД (С ФИКСОМ ОШИБКИ LAST_RESET) =====
+// ===== ИНИЦИАЛИЗАЦИЯ БД =====
 async function initDB() {
     await dbRun("DROP TABLE IF EXISTS reports");
+    await dbRun("DROP TABLE IF EXISTS winter_limits"); // Пересоздаем для фикса last_reset
 
     await dbRun("CREATE TABLE IF NOT EXISTS users (user_id TEXT PRIMARY KEY, balance INTEGER DEFAULT 1000, reputation INTEGER DEFAULT 0, xp INTEGER DEFAULT 0, level INTEGER DEFAULT 1, reg_date TEXT, duel_wins INTEGER DEFAULT 0, bonus_count INTEGER DEFAULT 0, premium_until INTEGER DEFAULT 0, org TEXT, country TEXT, clothes TEXT, cars TEXT DEFAULT '[]', last_bonus_date TEXT, bonus_streak INTEGER DEFAULT 0, sim_card TEXT)");
     await dbRun("CREATE TABLE IF NOT EXISTS active_duels (msg_id TEXT PRIMARY KEY, challenger TEXT, bet INTEGER, peer_id TEXT)");
@@ -92,7 +93,10 @@ async function initDB() {
     await dbRun("CREATE TABLE IF NOT EXISTS prop_deals (id INTEGER PRIMARY KEY AUTOINCREMENT, seller_id TEXT, buyer_id TEXT, type TEXT, prop_id INTEGER, price INTEGER, peer_id TEXT)");
     await dbRun("CREATE TABLE IF NOT EXISTS chat_messages (peer_id TEXT, user_id TEXT, count INTEGER DEFAULT 0, PRIMARY KEY (peer_id, user_id))");
     await dbRun("CREATE TABLE IF NOT EXISTS businesses (user_id TEXT PRIMARY KEY, biz_name TEXT, level INTEGER DEFAULT 1, balance INTEGER DEFAULT 0, last_income INTEGER, last_withdraw INTEGER DEFAULT 0)");
-    await dbRun("CREATE TABLE IF NOT EXISTS rep_limits (user_id TEXT PRIMARY KEY, count INTEGER DEFAULT 0, last_reset INTEGER)");
+    
+    // Таблица лимитов репутации (кто кому давал)
+    await dbRun("CREATE TABLE IF NOT EXISTS rep_limits (user_id TEXT, target_id TEXT, last_given INTEGER, PRIMARY KEY (user_id, target_id))");
+    
     await dbRun("CREATE TABLE IF NOT EXISTS work_cd (user_id TEXT PRIMARY KEY, count INTEGER DEFAULT 0, last_reset INTEGER)");
     await dbRun("CREATE TABLE IF NOT EXISTS properties (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT, location TEXT, tier INTEGER, owner_id TEXT)");
     await dbRun("CREATE TABLE IF NOT EXISTS custom_cmds (user_id TEXT, alias TEXT, real_cmd TEXT, PRIMARY KEY (user_id, alias))");
@@ -107,7 +111,6 @@ async function initDB() {
     await dbRun("CREATE TABLE IF NOT EXISTS winter_event (user_id TEXT PRIMARY KEY, reps_given INTEGER DEFAULT 0, game_score INTEGER DEFAULT 0, msgs_sent INTEGER DEFAULT 0, completed INTEGER DEFAULT 0, last_opened INTEGER DEFAULT 0)");
     
     // Таблица лимитов зимних игр (0/10) - СОЗДАЕМ ЗАНОВО ЧТОБЫ ГАРАНТИРОВАТЬ last_reset
-    await dbRun("DROP TABLE IF EXISTS winter_limits");
     await dbRun("CREATE TABLE IF NOT EXISTS winter_limits (user_id TEXT PRIMARY KEY, snowballs INTEGER DEFAULT 0, tree INTEGER DEFAULT 0, sleds INTEGER DEFAULT 0, snowman INTEGER DEFAULT 0, gift INTEGER DEFAULT 0, last_reset INTEGER DEFAULT 0)");
 
     // Таблица призов кейса
@@ -116,7 +119,7 @@ async function initDB() {
     try { await dbRun("ALTER TABLE users ADD COLUMN sim_card TEXT"); } catch(e) {}
     try { await dbRun("ALTER TABLE users ADD COLUMN cars TEXT DEFAULT '[]'"); } catch(e) {}
 
-    console.log("--- БАЗА ДАННЫХ ГОТОВА (ФИКС WINTER_LIMITS) ---");
+    console.log("--- БАЗА ДАННЫХ ГОТОВА ---");
 }
 initDB();
 
@@ -338,7 +341,7 @@ function buildMinesKb(gameId, opened, mines = [], isGameOver = false, hitCell = 
         kb.callbackButton({ label: `💰 Забрать ${currentMoney}`, payload: { cmd: 'mines_cashout', gameId: String(gameId) }, color: Keyboard.SECONDARY_COLOR });
     }
     return kb.toString();
-                }
+        }
 // ===== КЛАВИАТУРЫ =====
 const mainKb = Keyboard.builder()
     .callbackButton({ label: '💼 Работа', payload: { cmd: 'main_menu', action: 'work' }, color: Keyboard.POSITIVE_COLOR })
@@ -377,11 +380,20 @@ const getHelpBackKb = () => {
         .toString();
 };
 
-// ИСПРАВЛЕННЫЙ ТОП: КНОПКИ "ОБЩЕЕ/В БЕСЕДЕ" ТЕПЕРЬ ВНУТРИ РАЗДЕЛА
+const getMinesCountKb = (gameId) => {
+    const kb = Keyboard.builder().inline();
+    let count = 0;
+    for (let i = 2; i <= 8; i++) {
+        kb.callbackButton({ label: `${i} 💣`, payload: { cmd: 'mines_set', gameId: String(gameId), count: String(i) }, color: Keyboard.SECONDARY_COLOR });
+        count++;
+        if (count % 4 === 0 && i !== 8) kb.row();
+    }
+    return kb.toString();
+};
+
 const getTopKb = (authorId, type = 'coins', scope = 'chat', repType = 'pos') => {
     const kb = Keyboard.builder().inline();
     
-    // 1. Выбор категории (всегда сверху)
     kb.callbackButton({ label: '💰 Монеты', payload: { cmd: 'top_menu', type: 'coins', scope, repType, author: authorId }, color: type === 'coins' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     kb.callbackButton({ label: '⭐ Лиги', payload: { cmd: 'top_menu', type: 'level', scope, repType, author: authorId }, color: type === 'level' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     kb.row();
@@ -397,12 +409,10 @@ const getTopKb = (authorId, type = 'coins', scope = 'chat', repType = 'pos') => 
     
     kb.callbackButton({ label: '🎁 Бонус', payload: { cmd: 'top_menu', type: 'bonus', scope, repType, author: authorId }, color: type === 'bonus' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     
-    // 2. Разделитель и переключатели режима (теперь ВНУТРИ раздела)
     kb.row();
     kb.callbackButton({ label: '🌍 Общее', payload: { cmd: 'top_menu', type, scope: 'global', repType, author: authorId }, color: scope === 'global' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     kb.callbackButton({ label: '💬 В беседе', payload: { cmd: 'top_menu', type, scope: 'chat', repType, author: authorId }, color: scope === 'chat' ? Keyboard.PRIMARY_COLOR : Keyboard.SECONDARY_COLOR });
     
-    // 3. Кнопка назад в самом низу
     kb.row();
     kb.callbackButton({ label: '🔙 Назад', payload: { cmd: 'top_back', author: authorId }, color: Keyboard.SECONDARY_COLOR });
     
@@ -644,13 +654,11 @@ vk.updates.on('message_new', async (message) => {
         if (cmdWord === 'купитьсим') {
             if (userRow.sim_card) return await message.reply(`❌ У вас уже есть сим-карта (${userRow.sim_card}). Сначала слейте её: слитьсим`, replyParams());
             
-            // Получаем желаемый номер из аргументов
             let desiredNumber = parts[1];
             if (!desiredNumber || desiredNumber.length !== 4 || isNaN(desiredNumber)) {
                 return await message.reply("❌ Формат: /купитьсим [4 цифры]\nПример: /купитьсим 7777", replyParams());
             }
 
-            // Проверяем, занят ли номер
             const existing = await dbGet("SELECT owner_id FROM sim_cards WHERE number = ?", [desiredNumber]);
             if (existing) {
                 return await message.reply(`❌ Номер ${desiredNumber} уже занят другим игроком! Выберите другой.`, replyParams());
@@ -669,7 +677,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(`📱 Сим-карта слита за 10,000$!`, replyParams());
         }
 
-        // --- РЕПУТАЦИЯ (ФИКС: МОЖНО ДАВАТЬ РАЗНЫМ ЛЮДЯМ) ---
+        // --- РЕПУТАЦИЯ (ФИКС КАК НА СКРИНЕ) ---
         if (cmdWord === 'rep' || cmdWord === 'реп') {
             if (parts.length < 2) return await message.reply("🔔 Формат: /rep + или /rep - @ник", replyParams());
             
@@ -695,17 +703,18 @@ vk.updates.on('message_new', async (message) => {
             if (!targetId) return await message.reply("⚠️ Укажите пользователя.", replyParams());
             if (targetId === userId) return await message.reply("❌ Нельзя себе.", replyParams());
 
-            // Проверяем лимит действий (3 раза в сутки), но не блокируем разных людей
+            // Проверяем, давал ли игрок реп этому человеку сегодня
             const now = Date.now();
-            const repRow = await dbGet("SELECT count, last_reset FROM rep_limits WHERE user_id = ?", [String(userId)]);
-            let repCount = repRow ? Number(repRow.count) : 0;
-            let repReset = repRow ? Number(repRow.last_reset) : 0;
+            const repLimit = await dbGet("SELECT last_given FROM rep_limits WHERE user_id = ? AND target_id = ?", [String(userId), String(targetId)]);
+            
+            if (repLimit && (now - repLimit.last_given) < 86400000) {
+                const hoursLeft = Math.ceil((86400000 - (now - repLimit.last_given)) / 3600000);
+                const minsLeft = Math.floor(((86400000 - (now - repLimit.last_given)) % 3600000) / 60000);
+                return await message.reply(`⛔ Вы уже изменяли репутацию этого пользователя. Попробуйте снова через ${hoursLeft} часа ${minsLeft} минут.`);
+            }
 
-            if (now - repReset >= 86400000) { repCount = 0; repReset = now; }
-            if (repCount >= 3) return await message.reply(`⏳ Лимит исчерпан (3/3). Ждите обновления.`, replyParams());
-
-            repCount++;
-            await dbRun("REPLACE INTO rep_limits (user_id, count, last_reset) VALUES (?, ?, ?)", [String(userId), repCount, repReset]);
+            // Обновляем или создаем запись лимита
+            await dbRun("INSERT OR REPLACE INTO rep_limits (user_id, target_id, last_given) VALUES (?, ?, ?)", [String(userId), String(targetId), now]);
 
             if (isPlus) {
                 await updateReputation(targetId, 1);
@@ -717,10 +726,10 @@ vk.updates.on('message_new', async (message) => {
                 await updateReputation(targetId, -1);
             }
 
-            return await message.reply(`✅ Репутация ${await getFullName(targetId)} изменена. Осталось: ${3 - repCount}/3`, replyParams());
+            return await message.reply(`✅ Репутация ${await getFullName(targetId)} изменена.`, replyParams());
         }
 
-        // --- ПРОФИЛЬ (ЗИМНИЕ ЭМОДЗИ, БЕЗ ОДЕЖДЫ) ---
+        // --- ПРОФИЛЬ (ЗИМНИЕ ЭМОДЗИ 🎄, БЕЗ ОДЕЖДЫ) ---
         if (cmdWord === 'профиль' || cmdWord === 'баланс') {
             const houseData = await dbGet("SELECT location, tier FROM properties WHERE owner_id = ? AND type = 'house' LIMIT 1", [String(userId)]);
             const garageData = await dbGet("SELECT location, tier FROM properties WHERE owner_id = ? AND type = 'garage' LIMIT 1", [String(userId)]);
@@ -729,21 +738,31 @@ vk.updates.on('message_new', async (message) => {
             
             const premStr = isPremium ? `До ${new Date(userRow.premium_until).toLocaleDateString('ru-RU')}` : "Нет";
             const bizStr = bizData ? bizData.biz_name : "Нет";
-            const carsStr = carsArr.length > 0 ? carsArr.join(', ') : "Нет";
+            
+            // Если есть Bugatti, показываем его, иначе список машин
+            let carsStr = "Нет";
+            if (carsArr.length > 0) {
+                if (carsArr.includes('Bugatti Chiron')) {
+                    carsStr = "Bugatti Veyron 🏎️";
+                } else {
+                    carsStr = carsArr.join(', ');
+                }
+            }
+            
             const simStr = userRow.sim_card || "Нет";
 
-            const profText = `❄️🌲 Профиль ${await getFullName(userId)} 🌲❄️\n\n` +
-                             `❄️ Баланс: ${formatMoney(balance)}$\n` +
-                             `❄️ Тел: ${simStr}\n` +
-                             `❄️ Премиум: ${premStr}\n` +
-                             `❄️ Реп: ${rep}\n` +
-                             `❄️ Уровень: ${userRow.level} (${userRow.xp}/${userRow.level*500} XP)\n\n` +
-                             `🌲 Бизнес: ${bizStr}\n` +
-                             `🌲 Дом: ${houseData ? houseData.location + ' Т' + houseData.tier : "Нет"}\n` +
-                             `🌲 Гараж: ${garageData ? garageData.location + ' Т' + garageData.tier : "Нет"}\n` +
-                             `🌲 Машины (${carsArr.length}/10): ${carsStr}\n` +
-                             `🌲 Орг: ${userRow.org || "Нет"}\n` +
-                             `🌲 Страна: ${userRow.country || "Нет"}\n\n` +
+            const profText = `🎄 Профиль ${await getFullName(userId)} 🎄\n\n` +
+                             `🎄 Баланс: ${formatMoney(balance)}$\n` +
+                             `🎄 Тел: ${simStr}\n` +
+                             `🎄 Премиум: ${premStr}\n` +
+                             `🎄 Реп: ${rep}\n` +
+                             `🎄 Уровень: ${userRow.level} (${userRow.xp}/${userRow.level*500} XP)\n\n` +
+                             `🎄 Бизнес: ${bizStr}\n` +
+                             `🎄 Дом: ${houseData ? houseData.location + ' Т' + houseData.tier : "Нет"}\n` +
+                             `🎄 Гараж: ${garageData ? garageData.location + ' Т' + garageData.tier : "Нет"}\n` +
+                             `🎄 Машины (${carsArr.length}/10): ${carsStr}\n` +
+                             `🎄 Орг: ${userRow.org || "Нет"}\n` +
+                             `🎄 Страна: ${userRow.country || "Нет"}\n\n` +
                              `🆔 ID: ${userId}`;
 
             let attachment = null;
@@ -875,7 +894,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(`💸 Выведено ${formatMoney(totalBalance)}$!`, replyParams());
         }
 
-        // --- ДОМА И ГАРАЖИ (ИСПРАВЛЕНО + ДОНАТЫ) ---
+        // --- ДОМА И ГАРАЖИ ---
         if (cmdWord === 'дома') {
             let txt = "🏠 Доступные дома:\n\n";
             let i = 1;
@@ -899,13 +918,12 @@ vk.updates.on('message_new', async (message) => {
         }
 
         if (cmdWord === 'купить' && (parts[1] === 'дом' || parts[1] === 'гараж')) {
-            const propType = parts[1]; // 'дом' или 'гараж'
-            const tierNum = parseInt(parts[2]); // номер топа (1, 2, 3...)
+            const propType = parts[1];
+            const tierNum = parseInt(parts[2]);
             const locationName = parts.slice(3).join(' ').toLowerCase().trim();
 
             if (!tierNum || !locationName) return await message.reply(`❌ Формат: купить ${propType} топ [номер] [Локация]`);
 
-            // Находим локацию по названию
             let selectedLoc = null;
             for (const [key, data] of Object.entries(PROPERTY_DATA)) {
                 if (key.includes(locationName) || data.name.toLowerCase().includes(locationName)) {
@@ -915,11 +933,9 @@ vk.updates.on('message_new', async (message) => {
             }
             if (!selectedLoc) return await message.reply("❌ Такая локация не найдена. Посмотрите список: /дома или /гаражи");
 
-            // Проверяем, есть ли у игрока уже такая недвижимость
             const existingProp = await dbGet("SELECT id FROM properties WHERE owner_id = ? AND type = ? AND location = ?", [String(userId), propType, selectedLoc.name]);
             if (existingProp) return await message.reply(`❌ У вас уже есть ${propType} в локации ${selectedLoc.name}!`);
 
-            // Проверяем свободные места
             const countRow = await dbGet("SELECT COUNT(*) as c FROM properties WHERE location = ? AND type = ?", [selectedLoc.name, propType]);
             if (countRow.c >= 20) return await message.reply(`❌ В локации ${selectedLoc.name} больше нет свободных ${propType === 'дом' ? 'домов' : 'гаражей'}!`);
 
@@ -943,19 +959,15 @@ vk.updates.on('message_new', async (message) => {
             if (!price || price < 1000) return await message.reply(`❌ Укажите корректную сумму продажи.`);
             if (buyerId === userId) return await message.reply("❌ Нельзя продать самому себе.");
 
-            // Ищем недвижимость продавца
             const myProp = await dbGet("SELECT id, location, type FROM properties WHERE owner_id = ? AND type = ? ORDER BY id DESC LIMIT 1", [String(userId), propType]);
             
             if (!myProp) return await message.reply(`❌ У вас нет ${propType} для продажи!`);
 
-            // Проверка баланса покупателя
             const buyerBal = await getBalance(buyerId);
             if (buyerBal < price) return await message.reply("❌ У покупателя недостаточно средств!");
 
-            // Передача прав собственности
             await dbRun("UPDATE properties SET owner_id = ? WHERE id = ?", [String(buyerId), myProp.id]);
             
-            // Деньги
             await updateBalance(userId, price);
             await updateBalance(buyerId, -price);
 
@@ -963,13 +975,12 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(`${emoji} Вы продали ${propType} в локации ${myProp.location} игроку ${await getFullName(buyerId)} за ${formatMoney(price)}$!`, replyParams());
         }
 
-        // --- ДОНАТЫ НЕДВИЖИМОСТИ (ТОП 10 ПО ТИРАМ Т1-Т10) ---
+        // --- ДОНАТЫ НЕДВИЖИМОСТИ ---
         if (cmdWord === 'дондом' || cmdWord === 'донгараж') {
             const propType = cmdWord === 'дондом' ? 'house' : 'garage';
             const emoji = cmdWord === 'дондом' ? '🏠' : '🏘️';
             const typeName = cmdWord === 'дондом' ? 'ДОМОВ' : 'ГАРАЖЕЙ';
             
-            // Получаем топ-10 недвижимости по тирам (от Т1 до Т10)
             const rows = await dbAll(`
                 SELECT p.id, p.location, p.tier, u.user_id, 
                        (SELECT first_name || ' ' || last_name FROM users WHERE user_id = p.owner_id) as owner_name
@@ -1007,18 +1018,12 @@ vk.updates.on('message_new', async (message) => {
                 return await message.reply(`❌ Формат: /дон ${parts[1]} [ID недвижимости] [сумма]\nСписок: /дондом или /донгараж`, replyParams());
             }
 
-            // Находим недвижимость по ID
             const prop = await dbGet("SELECT * FROM properties WHERE id = ? AND type = ?", [propId, propType]);
             if (!prop) return await message.reply(`❌ Недвижимость с ID ${propId} не найдена!`, replyParams());
 
-            // Проверка баланса
             if (balance < amount) return await message.reply(`❌ Не хватает денег! Нужно ${formatMoney(amount)}$`, replyParams());
 
-            // Списываем деньги у донатера
             await updateBalance(userId, -amount);
-            
-            // Можно добавить логику начисления очков владельцу недвижимости, если нужно
-            // Например: await dbRun("UPDATE users SET xp = xp + ? WHERE user_id = ?", [Math.floor(amount / 100), prop.owner_id]);
 
             const emoji = propType === 'house' ? '🏠' : '🏘️';
             return await message.reply(`${emoji} Задонатил ${formatMoney(amount)}$ на ${propType === 'house' ? 'дом' : 'гараж'} #${propId} (${prop.location} Т${prop.tier})!`, replyParams());
@@ -1048,69 +1053,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(topText, replyParams(getTopKb(userId, 'coins', 'chat')));
         }
 
-        // --- ЗИМНИЕ ИГРЫ С ЗАГАДКАМИ И ЛИМИТОМ 0/10 ---
-        async function checkWinterLimit(gameField) {
-            let lim = await dbGet(`SELECT ${gameField}, last_reset FROM winter_limits WHERE user_id = ?`, [String(userId)]);
-            const now = Date.now();
-            
-            if (!lim) {
-                await dbRun(`INSERT INTO winter_limits (user_id, last_reset) VALUES (?, ?)`, [String(userId), now]);
-                lim = { [gameField]: 0, last_reset: now };
-            }
-
-            // Сброс лимита каждые 24 часа
-            if (now - lim.last_reset >= 86400000) {
-                await dbRun(`UPDATE winter_limits SET ${gameField} = 0, last_reset = ? WHERE user_id = ?`, [now, String(userId)]);
-                lim[gameField] = 0;
-                lim.last_reset = now;
-            }
-
-            if (lim[gameField] >= 10) return false;
-            await dbRun(`UPDATE winter_limits SET ${gameField} = ${gameField} + 1 WHERE user_id = ?`, [String(userId)]);
-            return true;
-        }
-
-        function generateRiddle() {
-            const a = Math.floor(Math.random() * 20) + 1;
-            const b = Math.floor(Math.random() * 20) + 1;
-            const ops = ['+', '-', '*'];
-            const op = ops[Math.floor(Math.random() * ops.length)];
-            let answer;
-            if (op === '+') answer = a + b;
-            else if (op === '-') answer = a - b;
-            else answer = a * b;
-            return { question: `Сколько будет ${a} ${op} ${b}?`, answer: answer };
-        }
-
-        if (cmdWord === 'снежки' || cmdWord === 'елка' || cmdWord === 'санки' || cmdWord === 'снеговик' || cmdWord === 'подарок') {
-            const gameMap = {
-                'снежки': 'snowballs',
-                'елка': 'tree',
-                'санки': 'sleds',
-                'снеговик': 'snowman',
-                'подарок': 'gift'
-            };
-            const gameField = gameMap[cmdWord];
-            
-            if (!(await checkWinterLimit(gameField))) {
-                return await message.reply("❄️ Лимит исчерпан (10/10)! Приходите через 24 часа.", replyParams());
-            }
-
-            const riddle = generateRiddle();
-            adminStates.set(userId, `riddle_${cmdWord}_${riddle.answer}`);
-            
-            const emojis = {
-                'снежки': '❄️',
-                'елка': '🎄',
-                'санки': '🛷',
-                'снеговик': '⛄',
-                'подарок': '🎁'
-            };
-            
-            return await message.reply(`${emojis[cmdWord]} Решите пример, чтобы получить приз (1кк-5кк):\n\n${riddle.question}`, replyParams());
-        }
-
-        // --- ЗИМНИЙ ИВЕНТ ---
+        // --- ЗИМНИЙ ИВЕНТ (ТОЛЬКО EVENT И ОТКРЫТИЕ КЕЙСА) ---
         if (cmdWord === 'event') {
             let eventRow = await dbGet("SELECT * FROM winter_event WHERE user_id = ?", [String(userId)]);
             if (!eventRow) {
@@ -1135,20 +1078,21 @@ vk.updates.on('message_new', async (message) => {
             if (task1Done && task2Done && task3Done) {
                 if (eventRow.completed !== 1) {
                     await dbRun("UPDATE winter_event SET completed = 1 WHERE user_id = ?", [String(userId)]);
-                    return await message.reply(`🎉 ЗАДАНИЯ ВЫПОЛНЕНЫ!\n\n🎁 Получен: Кейс "Зимний"\nНапишите: /открыть кейс зимний`, replyParams());
+                    return await message.reply(`🎉 ЗАДАНИЯ ВЫПОЛНЕНЫ!\n\n🎁 Получен: Кейс "Зимний"\nКогда выполните всё, напишите /открыть кейс зимний`, replyParams());
                 } else {
-                    return await message.reply(`🎁 У вас есть незатронутый Зимний кейс!\nНапишите: /открыть кейс зимний`, replyParams());
+                    return await message.reply(`🎁 У вас есть незатронутый Зимний кейс!\nКогда выполните всё, напишите /открыть кейс зимний`, replyParams());
                 }
             } else {
                 let progressText = `❄️ ЗИМНИЙ ИВЕНТ ❄️\n\n`;
                 progressText += `1️⃣ Выдать 10 реп\nСтатус: ${eventRow.reps_given}/10 ${task1Done ? '✅' : '⏳'}\n\n`;
                 progressText += `2️⃣ Набрать 10,000 очков в играх\nСтатус: ${eventRow.game_score}/10000 ${task2Done ? '✅' : '⏳'}\n\n`;
                 progressText += `3️⃣ Написать 100 сообщений здесь\nСтатус: ${currentMsgs}/100 ${task3Done ? '✅' : '⏳'}\n\n`;
+                progressText += `💡 Когда все выполнить игроки чтобы написали /открыть кейс зимний`;
                 return await message.reply(progressText, replyParams());
             }
         }
 
-        // --- ОТКРЫТИЕ КЕЙСА ---
+        // --- ОТКРЫТИЕ КЕЙСА (НОВЫЕ НАГРАДЫ) ---
         if (cmdWord === 'открыть') {
             const caseName = parts.slice(1).join(' ').toLowerCase().trim();
             if (caseName === 'кейс зимний' || caseName === 'зимний') {
@@ -1169,46 +1113,43 @@ vk.updates.on('message_new', async (message) => {
                     prizesRow = { bugatti: 0, premium_forever: 0 };
                 }
 
+                // Награды по одному рандому
                 const possiblePrizes = [
-                    { type: 'money', val: 4000000, text: '4,000,000$' },
-                    { type: 'money', val: 5000000, text: '5,000,000$' },
-                    { type: 'premium_year', text: 'Премиум на год' },
+                    { type: 'bugatti', text: 'Bugatti Veyron' },
                     { type: 'money', val: 10000000, text: '10,000,000$' },
-                    { type: 'bugatti', text: '🏎️ Bugatti Chiron' },
-                    { type: 'money', val: 15000000, text: '15,000,000$' },
                     { type: 'money', val: 20000000, text: '20,000,000$' },
-                    { type: 'rep', val: 10, text: '+10 Репутации' },
-                    { type: 'money', val: 100000000, text: '100,000,000$' },
-                    { type: 'premium_forever', text: '💎 Премиум НАВСЕГДА' }
+                    { type: 'money', val: 15000000, text: '15,000,000$' },
+                    { type: 'legendary', val: 100000000, text: '100,000,000$ (Легендарная награда)' },
+                    { type: 'legendary', val: 200000000, text: '200,000,000$ (Легендарная награда)' },
+                    { type: 'level', val: 5, text: 'Уровень 5 ⭐' },
+                    { type: 'premium', val: 300, text: 'Премиум 300 дней' },
+                    { type: 'premium', val: 365, text: 'Премиум 365 дней' }
                 ];
 
-                let availablePrizes = possiblePrizes.filter(p => {
-                    if (p.type === 'bugatti' && prizesRow.bugatti) return false;
-                    if (p.type === 'premium_forever' && prizesRow.premium_forever) return false;
-                    return true;
-                });
-
-                if (availablePrizes.length === 0) availablePrizes = possiblePrizes.filter(p => p.type === 'money' || p.type === 'rep' || p.type === 'premium_year');
-
-                const prize = availablePrizes[Math.floor(Math.random() * availablePrizes.length)];
-                let resultText = `📦 Зимний кейс открыт!\n🎉 Выпало: ${prize.text}`;
-
-                if (prize.type === 'money') {
-                    await updateBalance(userId, prize.val);
-                } else if (prize.type === 'premium_year') {
-                    await dbRun("UPDATE users SET premium_until = ? WHERE user_id = ?", [Date.now() + 365 * 86400000, String(userId)]);
-                } else if (prize.type === 'premium_forever') {
-                    await dbRun("UPDATE users SET premium_until = ? WHERE user_id = ?", [9999999999999, String(userId)]);
-                    await dbRun("UPDATE winter_case_prizes SET premium_forever = 1 WHERE user_id = ?", [String(userId)]);
-                } else if (prize.type === 'rep') {
-                    await updateReputation(userId, prize.val);
-                } else if (prize.type === 'bugatti') {
+                const prize = possiblePrizes[Math.floor(Math.random() * possiblePrizes.length)];
+                
+                // Текст открытия
+                await message.reply("📦 Открываю кейс...", replyParams());
+                
+                let resultText = "";
+                if (prize.type === 'bugatti') {
+                    resultText = `📦 Кейс открыт, выпал ${prize.text}!\n\n🎉 Поздравляем вас с золотой машиной за вашу работу мы станем лучшими 💪`;
+                    
                     let carsArr = JSON.parse(userRow.cars || '[]');
                     if (!carsArr.includes('Bugatti Chiron')) {
                         carsArr.push('Bugatti Chiron');
                         await dbRun("UPDATE users SET cars = ? WHERE user_id = ?", [JSON.stringify(carsArr), String(userId)]);
                     }
                     await dbRun("UPDATE winter_case_prizes SET bugatti = 1 WHERE user_id = ?", [String(userId)]);
+                } else if (prize.type === 'money' || prize.type === 'legendary') {
+                    resultText = `📦 Кейс открыт, выпало ${prize.text}!`;
+                    await updateBalance(userId, prize.val);
+                } else if (prize.type === 'level') {
+                    resultText = `📦 Кейс открыт, выпал ${prize.text}!`;
+                    await dbRun("UPDATE users SET level = ? WHERE user_id = ?", [prize.val, String(userId)]);
+                } else if (prize.type === 'premium') {
+                    resultText = `📦 Кейс открыт, выпал ${prize.text}!`;
+                    await dbRun("UPDATE users SET premium_until = ? WHERE user_id = ?", [Date.now() + prize.val * 86400000, String(userId)]);
                 }
 
                 await dbRun("UPDATE winter_event SET last_opened = ?, completed = 0, reps_given = 0, game_score = 0 WHERE user_id = ?", [Date.now(), String(userId)]);
@@ -1244,7 +1185,7 @@ vk.updates.on('message_new', async (message) => {
             }
         }
 
-        // --- LOGS, ЧСБЛИСТ, BANLIST (РАБОЧИЕ И НА РУССКОМ) ---
+        // --- LOGS, ЧСБЛИСТ, BANLIST ---
         if (cmdWord === 'logs') {
             if (userId !== ADMIN_ID) return await message.reply("❌ Только для владельца.", replyParams());
             const { targetId } = await getTargetAndReason(message, 'logs');
@@ -1489,7 +1430,7 @@ vk.updates.on('message_new', async (message) => {
             await updateBalance(userId, amount);
             await dbRun("UPDATE users SET last_bonus_date = ?, bonus_streak = ?, bonus_count = bonus_count + 1 WHERE user_id = ?", [todayStr, streak, String(userId)]);
             return await message.reply(`🎁 ЕЖЕДНЕВНЫЙ БОНУС\n────────────────────\n🔥 Стрик: ${streak} дн.!\n💰 Награда: +${formatMoney(amount)}$\n\n💳 Баланс: ${formatMoney(await getBalance(userId))}$`, replyParams(isLs ? mainKb : undefined));
-            }
+                                                       }
         // ===== АДМИНСКИЕ КОМАНДЫ =====
         if (userId === ADMIN_ID) {
             
@@ -2406,12 +2347,6 @@ vk.updates.on('message_event', async (context) => {
             
             if (payload.section === 'winter') {
                 msg = "❄️ ЗИМНИЕ ИГРЫ ❄️\n\n" +
-                      "🎮 Игры с загадками (лимит 10 раз/сутки):\n" +
-                      "▪️ снежки - Бросить снежок\n" +
-                      "▪️ елка - Потрясти елку\n" +
-                      "▪️ санки - Катание на санках\n" +
-                      "▪️ снеговик - Слепить снеговика\n" +
-                      "▪️ подарок - Найти подарок\n\n" +
                       "🎁 Ивент:\n" +
                       "▪️ event - Зимний ивент\n" +
                       "▪️ открыть кейс зимний - Открыть награду";
