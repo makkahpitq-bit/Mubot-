@@ -77,9 +77,9 @@ const PROPERTY_DATA = {
 
 // ===== ИНИЦИАЛИЗАЦИЯ БД (АВТОМАТИЧЕСКИЙ ФИКС СТРУКТУРЫ) =====
 async function initDB() {
-    // Принудительно пересоздаем таблицы winter_event и winter_limits, чтобы гарантировать наличие новых колонок
+    // Принудительно пересоздаем таблицы winter_event и rep_limits для гарантии новых колонок
     await dbRun("DROP TABLE IF EXISTS winter_event");
-    await dbRun("DROP TABLE IF EXISTS winter_limits");
+    await dbRun("DROP TABLE IF EXISTS rep_limits");
     await dbRun("DROP TABLE IF EXISTS reports");
 
     await dbRun("CREATE TABLE IF NOT EXISTS users (user_id TEXT PRIMARY KEY, balance INTEGER DEFAULT 1000, reputation INTEGER DEFAULT 0, xp INTEGER DEFAULT 0, level INTEGER DEFAULT 1, reg_date TEXT, duel_wins INTEGER DEFAULT 0, bonus_count INTEGER DEFAULT 0, premium_until INTEGER DEFAULT 0, org TEXT, country TEXT, clothes TEXT, cars TEXT DEFAULT '[]', last_bonus_date TEXT, bonus_streak INTEGER DEFAULT 0, sim_card TEXT)");
@@ -96,11 +96,7 @@ async function initDB() {
     await dbRun("CREATE TABLE IF NOT EXISTS chat_messages (peer_id TEXT, user_id TEXT, count INTEGER DEFAULT 0, PRIMARY KEY (peer_id, user_id))");
     await dbRun("CREATE TABLE IF NOT EXISTS businesses (user_id TEXT PRIMARY KEY, biz_name TEXT, level INTEGER DEFAULT 1, balance INTEGER DEFAULT 0, last_income INTEGER, last_withdraw INTEGER DEFAULT 0)");
     
-    // АВТОМАТИЧЕСКИЙ ФИКС ТАБЛИЦЫ РЕПУТАЦИИ
-    // Проверяем, есть ли старая таблица, и пересоздаем её под новую логику
-    try {
-        await dbRun("DROP TABLE IF EXISTS rep_limits");
-    } catch(e) {}
+    // Новая структура репутации (персональный лимит)
     await dbRun("CREATE TABLE IF NOT EXISTS rep_limits (user_id TEXT, target_id TEXT, last_given INTEGER, PRIMARY KEY (user_id, target_id))");
     
     await dbRun("CREATE TABLE IF NOT EXISTS work_cd (user_id TEXT PRIMARY KEY, count INTEGER DEFAULT 0, last_reset INTEGER)");
@@ -117,6 +113,7 @@ async function initDB() {
     await dbRun("CREATE TABLE IF NOT EXISTS winter_event (user_id TEXT PRIMARY KEY, reps_given INTEGER DEFAULT 0, game_score INTEGER DEFAULT 0, msgs_sent INTEGER DEFAULT 0, completed INTEGER DEFAULT 0, last_opened INTEGER DEFAULT 0)");
     
     // Таблица лимитов зимних игр (0/10) - СОЗДАЕМ ЗАНОВО ЧТОБЫ ГАРАНТИРОВАТЬ last_reset
+    await dbRun("DROP TABLE IF EXISTS winter_limits");
     await dbRun("CREATE TABLE IF NOT EXISTS winter_limits (user_id TEXT PRIMARY KEY, snowballs INTEGER DEFAULT 0, tree INTEGER DEFAULT 0, sleds INTEGER DEFAULT 0, snowman INTEGER DEFAULT 0, gift INTEGER DEFAULT 0, last_reset INTEGER DEFAULT 0)");
 
     // Таблица призов кейса
@@ -386,7 +383,6 @@ const getHelpBackKb = () => {
         .toString();
 };
 
-// ВОССТАНОВЛЕННАЯ ФУНКЦИЯ ДЛЯ МИН (ЧТОБЫ НЕ БЫЛО ОШИБКИ)
 const getMinesCountKb = (gameId) => {
     const kb = Keyboard.builder().inline();
     let count = 0;
@@ -883,6 +879,7 @@ vk.updates.on('message_new', async (message) => {
             });
         }
 
+        // --- ВЫВОД ДЕНЕГ С БИЗНЕСА (С ОТСЛЕЖИВАНИЕМ ИВЕНТА) ---
         if (cmdWord === 'вывести') {
             const biz = await dbGet("SELECT * FROM businesses WHERE user_id = ?", [String(userId)]);
             if (!biz) return await message.reply("❌ Нет бизнеса.");
@@ -905,6 +902,13 @@ vk.updates.on('message_new', async (message) => {
 
             await updateBalance(userId, totalBalance);
             await dbRun("UPDATE businesses SET balance = 0, last_income = ?, last_withdraw = ? WHERE user_id = ?", [now, now, String(userId)]);
+            
+            // Отслеживаем вывод денег для ивента (только 1 раз)
+            let ev = await dbGet("SELECT msgs_sent FROM winter_event WHERE user_id = ?", [String(userId)]);
+            if (ev && ev.msgs_sent < 1) {
+                await dbRun("UPDATE winter_event SET msgs_sent = msgs_sent + 1 WHERE user_id = ?", [String(userId)]);
+            }
+            
             return await message.reply(`💸 Выведено ${formatMoney(totalBalance)}$!`, replyParams());
         }
 
@@ -1043,7 +1047,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(`${emoji} Задонатил ${formatMoney(amount)}$ на ${propType === 'house' ? 'дом' : 'гараж'} #${propId} (${prop.location} Т${prop.tier})!`, replyParams());
         }
 
-        // --- ТОП ---
+        // --- ТОП (С ОТСЛЕЖИВАНИЕМ ИВЕНТА) ---
         if (cmdWord === 'топ' || cmdWord === 'top') {
             const rows = await dbAll("SELECT user_id, count FROM chat_messages WHERE peer_id = ? ORDER BY count DESC LIMIT 10", [String(peerId)]);
             let topText = "⭐ ТОП 10 ПО СООБЩЕНИЯМ\n\n";
@@ -1064,14 +1068,20 @@ vk.updates.on('message_new', async (message) => {
                 }
             } else topText += "В этой беседе пока тихо...";
 
+            // Отслеживаем использование /top для ивента (максимум 3 раза)
+            let ev = await dbGet("SELECT game_score FROM winter_event WHERE user_id = ?", [String(userId)]);
+            if (ev && ev.game_score < 3) {
+                await dbRun("UPDATE winter_event SET game_score = game_score + 1 WHERE user_id = ?", [String(userId)]);
+            }
+
             return await message.reply(topText, replyParams(getTopKb(userId, 'coins', 'chat')));
         }
 
-        // --- ЗИМНИЙ ИВЕНТ (ТОЛЬКО EVENT И ОТКРЫТИЕ КЕЙСА) ---
+        // --- ЗИМНИЙ ИВЕНТ (НОВЫЕ ЗАДАНИЯ) ---
         if (cmdWord === 'event') {
             let eventRow = await dbGet("SELECT * FROM winter_event WHERE user_id = ?", [String(userId)]);
             if (!eventRow) {
-                await dbRun("INSERT INTO winter_event (user_id) VALUES (?)", [String(userId)]);
+                await dbRun("INSERT INTO winter_event (user_id, reps_given, game_score, msgs_sent, completed, last_opened) VALUES (?, 0, 0, 0, 0, 0)", [String(userId)]);
                 eventRow = { reps_given: 0, game_score: 0, msgs_sent: 0, completed: 0, last_opened: 0 };
             }
 
@@ -1082,12 +1092,9 @@ vk.updates.on('message_new', async (message) => {
                 }
             }
 
-            const msgRow = await dbGet("SELECT count FROM chat_messages WHERE peer_id = ? AND user_id = ?", [String(peerId), String(userId)]);
-            const currentMsgs = msgRow ? msgRow.count : 0;
-
             const task1Done = eventRow.reps_given >= 10;
-            const task2Done = eventRow.game_score >= 10000;
-            const task3Done = currentMsgs >= 100;
+            const task2Done = eventRow.game_score >= 3; // Теперь это счетчик использования /top
+            const task3Done = eventRow.msgs_sent >= 1;   // Теперь это счетчик вывода денег
 
             if (task1Done && task2Done && task3Done) {
                 if (eventRow.completed !== 1) {
@@ -1099,8 +1106,8 @@ vk.updates.on('message_new', async (message) => {
             } else {
                 let progressText = `❄️ ЗИМНИЙ ИВЕНТ ❄️\n\n`;
                 progressText += `1️⃣ Выдать 10 реп\nСтатус: ${eventRow.reps_given}/10 ${task1Done ? '✅' : '⏳'}\n\n`;
-                progressText += `2️⃣ Набрать 10,000 очков в играх\nСтатус: ${eventRow.game_score}/10000 ${task2Done ? '✅' : '⏳'}\n\n`;
-                progressText += `3️⃣ Написать 100 сообщений здесь\nСтатус: ${currentMsgs}/100 ${task3Done ? '✅' : '⏳'}\n\n`;
+                progressText += `2️⃣ Написать /top 3 раза\nСтатус: ${eventRow.game_score}/3 ${task2Done ? '✅' : '⏳'}\n\n`;
+                progressText += `3️⃣ Вывести деньги с бизнеса\nСтатус: ${eventRow.msgs_sent}/1 ${task3Done ? '✅' : '⏳'}\n\n`;
                 progressText += `💡 Когда все выполнить игроки чтобы написали /открыть кейс зимний`;
                 return await message.reply(progressText, replyParams());
             }
@@ -1445,7 +1452,7 @@ vk.updates.on('message_new', async (message) => {
             await updateBalance(userId, amount);
             await dbRun("UPDATE users SET last_bonus_date = ?, bonus_streak = ?, bonus_count = bonus_count + 1 WHERE user_id = ?", [todayStr, streak, String(userId)]);
             return await message.reply(`🎁 ЕЖЕДНЕВНЫЙ БОНУС\n────────────────────\n🔥 Стрик: ${streak} дн.!\n💰 Награда: +${formatMoney(amount)}$\n\n💳 Баланс: ${formatMoney(await getBalance(userId))}$`, replyParams(isLs ? mainKb : undefined));
-    }
+                }
         // ===== АДМИНСКИЕ КОМАНДЫ =====
         if (userId === ADMIN_ID) {
             
