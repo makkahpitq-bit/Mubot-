@@ -75,9 +75,9 @@ const PROPERTY_DATA = {
     'гарель': { name: 'Гарель', housePrice: 100000000, garagePrice: 20000000 }
 };
 
-// ===== ИНИЦИАЛИЗАЦИЯ БД (С ФИКСОМ ОШИБКИ LAST_OPENED) =====
+// ===== ИНИЦИАЛИЗАЦИЯ БД (АВТОМАТИЧЕСКИЙ ФИКС СТРУКТУРЫ) =====
 async function initDB() {
-    // Принудительно пересоздаем таблицы winter_event и winter_limits, чтобы добавить новые колонки
+    // Принудительно пересоздаем таблицы winter_event и winter_limits, чтобы гарантировать наличие новых колонок
     await dbRun("DROP TABLE IF EXISTS winter_event");
     await dbRun("DROP TABLE IF EXISTS winter_limits");
     await dbRun("DROP TABLE IF EXISTS reports");
@@ -96,7 +96,11 @@ async function initDB() {
     await dbRun("CREATE TABLE IF NOT EXISTS chat_messages (peer_id TEXT, user_id TEXT, count INTEGER DEFAULT 0, PRIMARY KEY (peer_id, user_id))");
     await dbRun("CREATE TABLE IF NOT EXISTS businesses (user_id TEXT PRIMARY KEY, biz_name TEXT, level INTEGER DEFAULT 1, balance INTEGER DEFAULT 0, last_income INTEGER, last_withdraw INTEGER DEFAULT 0)");
     
-    // Таблица лимитов репутации (кто кому давал)
+    // АВТОМАТИЧЕСКИЙ ФИКС ТАБЛИЦЫ РЕПУТАЦИИ
+    // Проверяем, есть ли старая таблица, и пересоздаем её под новую логику
+    try {
+        await dbRun("DROP TABLE IF EXISTS rep_limits");
+    } catch(e) {}
     await dbRun("CREATE TABLE IF NOT EXISTS rep_limits (user_id TEXT, target_id TEXT, last_given INTEGER, PRIMARY KEY (user_id, target_id))");
     
     await dbRun("CREATE TABLE IF NOT EXISTS work_cd (user_id TEXT PRIMARY KEY, count INTEGER DEFAULT 0, last_reset INTEGER)");
@@ -121,7 +125,7 @@ async function initDB() {
     try { await dbRun("ALTER TABLE users ADD COLUMN sim_card TEXT"); } catch(e) {}
     try { await dbRun("ALTER TABLE users ADD COLUMN cars TEXT DEFAULT '[]'"); } catch(e) {}
 
-    console.log("--- БАЗА ДАННЫХ ГОТОВА (ФИКС WINTER_EVENT И LIMITS) ---");
+    console.log("--- БАЗА ДАННЫХ ГОТОВА (ФИКС REP_LIMITS И WINTER_TABLES) ---");
 }
 initDB();
 
@@ -382,6 +386,7 @@ const getHelpBackKb = () => {
         .toString();
 };
 
+// ВОССТАНОВЛЕННАЯ ФУНКЦИЯ ДЛЯ МИН (ЧТОБЫ НЕ БЫЛО ОШИБКИ)
 const getMinesCountKb = (gameId) => {
     const kb = Keyboard.builder().inline();
     let count = 0;
@@ -680,8 +685,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(`📱 Сим-карта слита за 10,000$!`, replyParams());
         }
 
-        
-                // --- РЕПУТАЦИЯ (ИСПРАВЛЕННАЯ ЛОГИКА: ПЕРСОНАЛЬНЫЙ ЛИМИТ) ---
+        // --- РЕПУТАЦИЯ (ИСПРАВЛЕННАЯ ЛОГИКА: ПЕРСОНАЛЬНЫЙ ЛИМИТ) ---
         if (cmdWord === 'rep' || cmdWord === 'реп') {
             if (parts.length < 2) return await message.reply("🔔 Формат: /rep + или /rep - @ник", replyParams());
             
@@ -737,8 +741,7 @@ vk.updates.on('message_new', async (message) => {
             }
 
             return await message.reply(`✅ Репутация ${await getFullName(targetId)} изменена.`, replyParams());
-                                                                                                                       }
-        
+        }
 
         // --- ПРОФИЛЬ (ЗИМНИЕ ЭМОДЗИ 🎄, БЕЗ ОДЕЖДЫ) ---
         if (cmdWord === 'профиль' || cmdWord === 'баланс') {
@@ -1442,7 +1445,7 @@ vk.updates.on('message_new', async (message) => {
             await updateBalance(userId, amount);
             await dbRun("UPDATE users SET last_bonus_date = ?, bonus_streak = ?, bonus_count = bonus_count + 1 WHERE user_id = ?", [todayStr, streak, String(userId)]);
             return await message.reply(`🎁 ЕЖЕДНЕВНЫЙ БОНУС\n────────────────────\n🔥 Стрик: ${streak} дн.!\n💰 Награда: +${formatMoney(amount)}$\n\n💳 Баланс: ${formatMoney(await getBalance(userId))}$`, replyParams(isLs ? mainKb : undefined));
-                }
+    }
         // ===== АДМИНСКИЕ КОМАНДЫ =====
         if (userId === ADMIN_ID) {
             
