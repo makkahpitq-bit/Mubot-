@@ -111,10 +111,15 @@ async function initDB() {
     await dbRun("CREATE TABLE IF NOT EXISTS winter_case_prizes (user_id TEXT PRIMARY KEY, bugatti INTEGER DEFAULT 0, premium_forever INTEGER DEFAULT 0)");
 
     // Таблицы для персонала, кейсов, орг и стран
-    await dbRun("CREATE TABLE IF NOT EXISTS staff (user_id TEXT PRIMARY KEY, role TEXT)");
-    await dbRun("CREATE TABLE IF NOT EXISTS special_cases (user_id TEXT PRIMARY KEY, count INTEGER DEFAULT 0)");
-    await dbRun("CREATE TABLE IF NOT EXISTS orgs (name TEXT PRIMARY KEY, owner_id TEXT, max_slots INTEGER)");
-    await dbRun("CREATE TABLE IF NOT EXISTS countries (name TEXT PRIMARY KEY, owner_id TEXT)");
+await dbRun("CREATE TABLE IF NOT EXISTS staff (user_id TEXT PRIMARY KEY, role TEXT)");
+await dbRun("CREATE TABLE IF NOT EXISTS special_cases (user_id TEXT PRIMARY KEY, count INTEGER DEFAULT 0)");
+await dbRun("CREATE TABLE IF NOT EXISTS orgs (name TEXT PRIMARY KEY, owner_id TEXT, max_slots INTEGER)");
+await dbRun("CREATE TABLE IF NOT EXISTS countries (name TEXT PRIMARY KEY, owner_id TEXT)");
+
+// ИСПРАВЛЕНИЕ ОШИБКИ SQLITE: ДОБАВЛЯЕМ КОЛОНКИ, ЕСЛИ ТАБЛИЦЫ УЖЕ БЫЛИ СОЗДАНЫ РАНЕЕ
+try { await dbRun("ALTER TABLE orgs ADD COLUMN max_slots INTEGER DEFAULT 10"); } catch(e) {}
+try { await dbRun("ALTER TABLE orgs ADD COLUMN owner_id TEXT"); } catch(e) {}
+try { await dbRun("ALTER TABLE countries ADD COLUMN owner_id TEXT"); } catch(e) {}
 
     // Безопасное добавление колонок
     try { await dbRun("ALTER TABLE users ADD COLUMN winter_cases INTEGER DEFAULT 0"); } catch(e) {}
