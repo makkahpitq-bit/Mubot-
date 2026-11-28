@@ -12,7 +12,7 @@ console.log("=========================================");
 // ===== НАСТРОЙКИ =====
 const TOKEN = "vk1.a.AP1n2HYshIvxjIs4zgHk-8D9YhA5TfocGLGiegFtOPtiBsDsxtU2RY_4muinefxI4qPxKyUB-WaLyKE1BrqAYzPWmxWEBPCvmEoF4AESV9yVn1QOr_OglVaHUxk9ndwasEkxw7lZhl2POVPxMwY20-YsY1OKffhMa62Wn-lv-BoGsG9YmZE6CisTD2_AdJ4FniwDIIQsLajcxjzxW2U3S8YdITWeuQ2GKNmb1657HM0";
 const GROUP_ID = 243089386;
-const ADMIN_ID = 200005093141; // ID Владельца
+const ADMIN_ID = 200005093141; 
 
 const DEFAULT_PROFILE_PHOTO = 'https://sun9-40.userapi.com/s/v1/ig2/NjVI-oWypORWXWSX6D7p537O9zXty6K8h4nYerGEy0bZTHcpbvFY_V1nCbVaWBtfVcte4MHBhJWG5Cbb-b5KaM3o.jpg?quality=95&as=32x22,48x34,72x50,108x76,160x112,240x168,277x194&from=bu&cs=277x0';
 
@@ -85,7 +85,6 @@ const COUNTRIES = ['Россия', 'Чеченская Республика', '�
 
 // ===== ИНИЦИАЛИЗАЦИЯ БД (ПОЛНЫЙ ФИКС СТРУКТУРЫ) =====
 async function initDB() {
-    // Пересоздаем таблицы для гарантии правильной структуры
     await dbRun("DROP TABLE IF EXISTS reports");
     await dbRun("DROP TABLE IF EXISTS winter_event");
     await dbRun("DROP TABLE IF EXISTS rep_limits");
@@ -105,7 +104,6 @@ async function initDB() {
     await dbRun("CREATE TABLE IF NOT EXISTS chat_messages (peer_id TEXT, user_id TEXT, count INTEGER DEFAULT 0, PRIMARY KEY (peer_id, user_id))");
     await dbRun("CREATE TABLE IF NOT EXISTS businesses (user_id TEXT PRIMARY KEY, biz_name TEXT, level INTEGER DEFAULT 1, balance INTEGER DEFAULT 0, last_income INTEGER, last_withdraw INTEGER DEFAULT 0)");
     
-    // Новая таблица репутации (персональный лимит)
     await dbRun("CREATE TABLE IF NOT EXISTS rep_limits (user_id TEXT, target_id TEXT, last_given INTEGER, PRIMARY KEY (user_id, target_id))");
     
     await dbRun("CREATE TABLE IF NOT EXISTS work_cd (user_id TEXT PRIMARY KEY, count INTEGER DEFAULT 0, last_reset INTEGER)");
@@ -115,19 +113,14 @@ async function initDB() {
     await dbRun("CREATE TABLE IF NOT EXISTS debts (id INTEGER PRIMARY KEY AUTOINCREMENT, lender TEXT, borrower TEXT, amount INTEGER, days INTEGER, status TEXT DEFAULT 'pending')");
     await dbRun("CREATE TABLE IF NOT EXISTS sim_cards (number TEXT PRIMARY KEY, owner_id TEXT)");
     
-    // Таблица репортов
     await dbRun("CREATE TABLE IF NOT EXISTS reports (id INTEGER PRIMARY KEY AUTOINCREMENT, reporter_id TEXT, text TEXT, status TEXT DEFAULT 'pending', chat_id TEXT, reply_text TEXT, rating INTEGER DEFAULT 0, rate_reason TEXT)");
 
-    // Таблица зимнего ивента (С КОЛОНКОЙ last_opened)
     await dbRun("CREATE TABLE IF NOT EXISTS winter_event (user_id TEXT PRIMARY KEY, reps_given INTEGER DEFAULT 0, game_score INTEGER DEFAULT 0, msgs_sent INTEGER DEFAULT 0, completed INTEGER DEFAULT 0, last_opened INTEGER DEFAULT 0)");
     
-    // Таблица лимитов зимних игр (0/10)
     await dbRun("CREATE TABLE IF NOT EXISTS winter_limits (user_id TEXT PRIMARY KEY, snowballs INTEGER DEFAULT 0, tree INTEGER DEFAULT 0, sleds INTEGER DEFAULT 0, snowman INTEGER DEFAULT 0, gift INTEGER DEFAULT 0, last_reset INTEGER DEFAULT 0)");
 
-    // Таблица призов кейса
     await dbRun("CREATE TABLE IF NOT EXISTS winter_case_prizes (user_id TEXT PRIMARY KEY, bugatti INTEGER DEFAULT 0, premium_forever INTEGER DEFAULT 0)");
 
-    // Таблица администраторов (staff)
     await dbRun("CREATE TABLE IF NOT EXISTS staff (user_id TEXT PRIMARY KEY, role TEXT, assigned_by TEXT, assigned_at INTEGER)");
 
     try { await dbRun("ALTER TABLE users ADD COLUMN sim_card TEXT"); } catch(e) {}
@@ -184,7 +177,6 @@ async function updateReputation(userId, amount) {
     await dbRun("UPDATE users SET reputation = ? WHERE user_id = ?", [rep + amount, String(userId)]);
 }
 
-// Функция получения имени БЕЗ упоминания (просто синий текст)
 async function getFullName(userId) {
     try {
         const [user] = await vk.api.users.get({ user_ids: userId });
@@ -219,7 +211,6 @@ async function getTargetAndReason(message, cmdName) {
     return { targetId, reason };
 }
 
-// Проверка прав администратора
 async function checkStaffRights(userId, minRole = 'Модератор') {
     if (userId === ADMIN_ID) return true;
     const staff = await dbGet("SELECT role FROM staff WHERE user_id = ?", [String(userId)]);
@@ -419,7 +410,6 @@ const getMinesCountKb = (gameId) => {
     return kb.toString();
 };
 
-// ТОП С КНОПКАМИ ВНУТРИ РАЗДЕЛА
 const getTopKb = (authorId, type = 'coins', scope = 'chat') => {
     const kb = Keyboard.builder().inline();
     
@@ -606,19 +596,8 @@ vk.updates.on('message_new', async (message) => {
             }
         }
 
-        // СПИСОК КОМАНД (ДОБАВЛЕНЫ ВАРИАНТЫ НАПИСАНИЯ)
-        const validCmds = [
-            'стакан', 'кубик', 'монетка', 'дрим', 'краш', 'рулетка', 'рул', 'автомат', 'блэкджек', 'мины', 
-            'топ', 'профиль', 'баланс', 'бизнес', 'машины', 'работа', 'бонус', 'фортуна', 'казино', 
-            'help', 'помощь', 'start', 'начать', 'transfer', 'перевод', 'duel', 'вывести', 'мойбизнес', 
-            'закрыть', 'rep', 'реп', 'промолист', 'promo', 'купить', 'купитьбиз', 'чсб', 'разчсб', 'kick', 
-            'выдать', 'обнулить', 'создать', 'cc', 'ping', 'пинг', 'убрать', 'дом', 'дома', 'гараж', 'гаражи', 
-            'продать', 'бан', 'kl', 'mute', 'unmute', 'размут', 'unban', 'разбан', 'заморозить', 'разморозить', 
-            'снять', 'unfreeze', 'pr', 'sellcar', 'слить', 'дон', 'дондом', 'донгараж', 'cmd', 'моикоманды', 
-            'premium', 'рег', 'q', 'админ', 'ahelp', 'объявление', 'report', 'репорт', 'вступить', 'организации', 
-            'страна', 'страны', 'датьдолг', 'мойдолг', 'cl', 'снятьпред', 'купитьсим', 'слитьсим', 'event', 
-            'открыть', 'слитьбиз', 'logs', 'чсблист', 'banlist', 'setadmin', 'staff'
-        ];
+        // СПИСОК КОМАНД
+        const validCmds = ['стакан', 'кубик', 'монетка', 'дрим', 'краш', 'рулетка', 'рул', 'автомат', 'блэкджек', 'мины', 'топ', 'профиль', 'баланс', 'бизнес', 'машины', 'работа', 'бонус', 'фортуна', 'казино', 'help', 'помощь', 'start', 'начать', 'transfer', 'перевод', 'duel', 'вывести', 'мойбизнес', 'закрыть', 'rep', 'реп', 'промолист', 'promo', 'купить', 'купитьбиз', 'чсб', 'разчсб', 'kick', 'выдать', 'обнулить', 'создать', 'cc', 'ping', 'пинг', 'убрать', 'дом', 'дома', 'гараж', 'гаражи', 'продать', 'бан', 'kl', 'mute', 'unmute', 'размут', 'unban', 'разбан', 'заморозить', 'разморозить', 'снять', 'unfreeze', 'pr', 'sellcar', 'слить', 'дон', 'дондом', 'донгараж', 'cmd', 'моикоманды', 'premium', 'рег', 'q', 'админ', 'ahelp', 'объявление', 'report', 'вступить', 'организации', 'страна', 'страны', 'датьдолг', 'мойдолг', 'cl', 'снятьпред', 'купитьсим', 'слитьсим', 'event', 'открыть', 'слитьбиз', 'logs', 'чсблист', 'banlist', 'setadmin', 'staff'];
         
         if (!validCmds.includes(cmdWord)) return; 
 
@@ -718,7 +697,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(`📱 Сим-карта слита за 10,000$!`, replyParams());
         }
 
-        // --- РЕПУТАЦИЯ (ИСПРАВЛЕННЫЙ ШАБЛОН И ЛИМИТ) ---
+        // --- РЕПУТАЦИЯ (ПЕРСОНАЛЬНЫЙ ЛИМИТ) ---
         if (cmdWord === 'rep' || cmdWord === 'реп') {
             if (parts.length < 2) return await message.reply("🔔 Для изменения репутации используйте /rep + или /rep -, указав пользователя. Пример: /rep + @Mokhma.volk\nЛибо ответьте на сообщение игрока.", replyParams());
             
@@ -776,7 +755,7 @@ vk.updates.on('message_new', async (message) => {
             }
         }
 
-        // --- ПРОФИЛЬ (БЕЗ УПОМИНАНИЙ, ТОЛЬКО СИНИЙ ТЕКСТ) ---
+        // --- ПРОФИЛЬ ---
         if (cmdWord === 'профиль' || cmdWord === 'баланс') {
             const houseData = await dbGet("SELECT location, tier FROM properties WHERE owner_id = ? AND type = 'house' LIMIT 1", [String(userId)]);
             const garageData = await dbGet("SELECT location, tier FROM properties WHERE owner_id = ? AND type = 'garage' LIMIT 1", [String(userId)]);
@@ -803,7 +782,7 @@ vk.updates.on('message_new', async (message) => {
             }
             
             const simStr = userRow.sim_card || "Нет";
-            const userName = await getFullName(userId); // Просто имя фамилия
+            const userName = await getFullName(userId);
 
             const profText = `🎄 Профиль ${userName} 🎄\n\n` +
                              `🎄 Баланс: ${formatMoney(balance)}$\n` +
@@ -1092,7 +1071,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(`${emoji} Задонатил ${formatMoney(amount)}$ на ${propType === 'house' ? 'дом' : 'гараж'} #${propId} (${prop.location} Т${prop.tier})!`, replyParams());
         }
 
-        // --- ТОП (НОВЫЙ ДИЗАЙН, БЕЗ УПОМИНАНИЙ) ---
+        // --- ТОП (С ОТСЛЕЖИВАНИЕМ ИВЕНТА) ---
         if (cmdWord === 'топ' || cmdWord === 'top') {
             const rows = await dbAll("SELECT user_id, count FROM chat_messages WHERE peer_id = ? ORDER BY count DESC LIMIT 10", [String(peerId)]);
             let topText = "⭐ ТОП 10 ПО СООБЩЕНИЯМ\n\n";
@@ -1107,14 +1086,12 @@ vk.updates.on('message_new', async (message) => {
                 for (const r of rows) {
                     const uInfo = usersInfo.find(u => u.id == r.user_id);
                     if (uInfo && !uInfo.deactivated) {
-                        // Просто синий текст имени и фамилии без упоминания
                         topText += `${emojis[count]} ${uInfo.first_name} ${uInfo.last_name || ''} - ${r.count} сообщ.\n`;
                         count++;
                     }
                 }
             } else topText += "В этой беседе пока тихо...";
 
-            // Отслеживаем использование /top для ивента
             let ev = await dbGet("SELECT game_score FROM winter_event WHERE user_id = ?", [String(userId)]);
             if (ev && ev.game_score < 3) {
                 await dbRun("UPDATE winter_event SET game_score = game_score + 1 WHERE user_id = ?", [String(userId)]);
@@ -1123,7 +1100,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(topText, replyParams(getTopKb(userId, 'coins', 'chat')));
         }
 
-        // --- ЗИМНИЙ ИВЕНТ (НОВЫЙ ТЕКСТ) ---
+        // --- ЗИМНИЙ ИВЕНТ ---
         if (cmdWord === 'event') {
             let eventRow = await dbGet("SELECT * FROM winter_event WHERE user_id = ?", [String(userId)]);
             if (!eventRow) {
@@ -1134,8 +1111,11 @@ vk.updates.on('message_new', async (message) => {
             if (eventRow.completed === 1 && eventRow.last_opened === 0) {
                  // Если выполнил, но еще не открыл - разрешаем открыть
             } else if (eventRow.last_opened > 0) {
-                const nextTime = new Date(eventRow.last_opened + 86400000).toLocaleString('ru-RU');
-                return await message.reply(`❄️ Вы уже забрали зимний кейс! Подождите до ${nextTime}.`, replyParams());
+                const hoursLeft = Math.ceil((86400000 - (Date.now() - eventRow.last_opened)) / 3600000);
+                if (hoursLeft > 0) {
+                    const nextTime = new Date(eventRow.last_opened + 86400000).toLocaleString('ru-RU');
+                    return await message.reply(`❄️ Вы уже забрали зимний кейс! Подождите до ${nextTime}.`, replyParams());
+                }
             }
 
             const msgRow = await dbGet("SELECT count FROM chat_messages WHERE peer_id = ? AND user_id = ?", [String(peerId), String(userId)]);
@@ -1162,11 +1142,10 @@ vk.updates.on('message_new', async (message) => {
             }
         }
 
-        // --- ОТКРЫТИЕ КЕЙСА (ЗИМНИЙ И ОСОБЫЙ) ---
+        // --- ОТКРЫТИЕ КЕЙСА ---
         if (cmdWord === 'открыть') {
             const caseName = parts.slice(1).join(' ').toLowerCase().trim();
             
-            // ЗИМНИЙ КЕЙС
             if (caseName === 'кейс зимний' || caseName === 'зимний') {
                 const eventRow = await dbGet("SELECT completed, last_opened FROM winter_event WHERE user_id = ?", [String(userId)]);
                 
@@ -1222,7 +1201,6 @@ vk.updates.on('message_new', async (message) => {
                 return await message.reply(resultText, replyParams());
             }
 
-            // ОСОБЫЙ КЕЙС
             if (caseName === 'кейс особый' || caseName === 'особый') {
                 const hasSpecialCase = await dbGet("SELECT * FROM promos WHERE code = 'special_case_' || ?", [String(userId)]);
                 if (!hasSpecialCase) {
@@ -1264,7 +1242,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply("🔥 Бизнес слит государству!\n💰 +10,000,000$", replyParams());
         }
 
-        // --- /АДМИН (ЧЕРЕЗ ОТВЕТ) ---
+        // --- /АДМИН ---
         if (cmdWord === 'админ') {
             if (!message.hasReplyMessage) return await message.reply("❌ Ответьте на сообщение нарушителя и напишите /админ", replyParams());
             
@@ -1315,7 +1293,6 @@ vk.updates.on('message_new', async (message) => {
             const reporterName = await getFullName(userId);
             const adminMsg = `📩 НОВЫЙ РЕПОРТ #${reportId}\n👤 От: ${reporterName}\n💬 Текст: "${reportText}"`;
 
-            // Отправляем всем админам и разработчикам
             const admins = await dbAll("SELECT user_id FROM staff WHERE role IN ('Администратор', 'Разработчик')");
             let sent = false;
 
@@ -1448,7 +1425,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(txt, replyParams());
         }
 
-        // --- SETADMIN (ИСПРАВЛЕН ПАРСИНГ РОЛИ) ---
+        // --- SETADMIN ---
         if (cmdWord === 'setadmin') {
             if (userId !== ADMIN_ID) return await message.reply("❌ Эта команда доступна только владельцу.", replyParams());
             
@@ -1456,14 +1433,9 @@ vk.updates.on('message_new', async (message) => {
                 return await message.reply("❌ Укажите пользователя и роль.\nПример: /setadmin @nik Модератор\nДоступные роли: Модератор, Администратор, Тестировщик, Разработчик", replyParams());
             }
             
-            // Собираем роль из всех оставшихся частей после ника
             const roleName = parts.slice(2).join(' ');
             const validRoles = ['Модератор', 'Администратор', 'Тестировщик', 'Разработчик'];
-            
-            // Ищем точное совпадение роли
-            const foundRole = validRoles.find(r => r.toLowerCase() === roleName.toLowerCase());
-            
-            if (!foundRole) {
+            if (!validRoles.includes(roleName)) {
                 return await message.reply(`❌ Неверная роль. Доступные: ${validRoles.join(', ')}`, replyParams());
             }
 
@@ -1482,8 +1454,8 @@ vk.updates.on('message_new', async (message) => {
 
             if (!targetId) return await message.reply("❌ Пользователь не найден.", replyParams());
 
-            await dbRun("REPLACE INTO staff (user_id, role, assigned_by, assigned_at) VALUES (?, ?, ?, ?)", [String(targetId), foundRole, String(userId), Date.now()]);
-            return await message.reply(`✅ ${await getFullName(targetId)} назначен на должность: ${foundRole}`, replyParams());
+            await dbRun("REPLACE INTO staff (user_id, role, assigned_by, assigned_at) VALUES (?, ?, ?, ?)", [String(targetId), roleName, String(userId), Date.now()]);
+            return await message.reply(`✅ ${await getFullName(targetId)} назначен на должность: ${roleName}`, replyParams());
         }
 
         // --- ВЫДАТЬ ОСОБЫЙ КЕЙС ---
@@ -1509,7 +1481,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(`✅ ${await getFullName(targetId)} получил Особый кейс!`, replyParams());
         }
 
-        // --- ИГРЫ (БЕЗ ЛИМИТА СТАВОК, С ШАБЛОНАМИ) ---
+        // --- ИГРЫ (ШАБЛОНЫ И ПРОВЕРКА БАЛАНСА) ---
         const gameCmds = ['рулетка', 'рул', 'краш', 'монетка', 'стакан', 'кубик', 'автомат', 'блэкджек', 'дрим', 'мины', 'фортуна'];
         if (gameCmds.some(cmd => cmdWord === cmd)) {
             const lastPlayed = gameCooldowns.get(userId) || 0;
@@ -1713,7 +1685,7 @@ vk.updates.on('message_new', async (message) => {
             return await message.reply(`🎰 Выпало: ${formatMoney(prize)}$!`, replyParams());
         }
 
-        // --- БОНУС (НОВЫЙ ШАБЛОН) ---
+        // --- БОНУС ---
         if (cmdWord === 'бонус') {
             const todayStr = new Date().toISOString().split('T')[0];
             const userName = await getFullName(userId);
@@ -2883,7 +2855,7 @@ vk.updates.on('message_new', async (message, next) => {
     const userId = message.senderId;
     const state = adminStates.get(userId);
 
-    // Обработка ответов на загадки зимних игр
+    // Обработка ответов на загадки зимних игр (если они вдруг останутся в validCmds)
     if (state && state.startsWith('riddle_')) {
         const parts = state.split('_');
         const gameCmd = parts[1];
